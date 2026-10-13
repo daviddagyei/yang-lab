@@ -174,6 +174,44 @@ class RDBM(nn.Module):
             (x_t - mu - extract(self.Theta, t, x_t.shape)* (x_start - mu) ) / extract(self.Sigma, t, x_t.shape)
         )
 
+    def data_consistency(self, x_start, mu, mask, dc_weight=1.0):
+        """
+        Data consistency (DC) layer for MRI reconstruction.
+
+        Enforces that, at k-space locations that were actually measured
+        during acquisition (mask == 1), the reconstructed image's k-space
+        matches the real measured data (derived here from `mu`, the
+        undersampled input). At locations that were NOT measured (mask == 0),
+        the network's own prediction is left untouched, since there is no
+        ground-truth data to enforce there.
+
+        x_start: (B, C, H, W) current real-valued image estimate (the
+            network's predicted clean image at this sampling step)
+        mu: (B, C, H, W) the degraded/undersampled input image -- used as
+            the source of "known" k-space data
+        mask: (H, W) or broadcastable to (B, C, H, W); 1 = measured,
+            0 = not measured. Must be the SAME undersampling mask used
+            when the degraded (LQ) input was generated during preprocessing.
+        dc_weight: 1.0 = hard data consistency (fully replace measured
+            locations with the real data); values < 1.0 blend instead,
+            which can help if the "measured" data itself is noisy.
+
+        Returns: (B, C, H, W) real-valued, data-consistency-corrected image.
+        """
+        mask = mask.to(device=x_start.device, dtype=x_start.dtype)
+
+        x_start_k = torch.fft.fftshift(
+            torch.fft.fft2(torch.fft.ifftshift(x_start, dim=(-2, -1))), dim=(-2, -1))
+        mu_k = torch.fft.fftshift(
+            torch.fft.fft2(torch.fft.ifftshift(mu, dim=(-2, -1))), dim=(-2, -1))
+
+        corrected_k = x_start_k * (1 - mask) + \
+            (dc_weight * mu_k + (1 - dc_weight) * x_start_k) * mask
+
+        corrected = torch.fft.fftshift(
+            torch.fft.ifft2(torch.fft.ifftshift(corrected_k, dim=(-2, -1))), dim=(-2, -1))
+        return corrected.real.to(x_start.dtype)
+
     def model_predictions(self, x_t, mu,  t, clip_denoised=True): 
         model_output = self.model(x_t, mu,t)
 
@@ -193,7 +231,7 @@ class RDBM(nn.Module):
         return ModelResPrediction(noise, x_start)
 
     @torch.no_grad()
-    def ddim_sample(self, x_input, gt, shape, last=True): 
+    def ddim_sample(self, x_input, gt, shape, last=True, mask=None, dc_weight=1.0):
         mu = x_input[0] 
         batch, device, total_timesteps, sampling_timesteps, objective = shape[
             0], self.thetas.device, self.num_timesteps, self.sampling_timesteps, self.objective
@@ -220,6 +258,12 @@ class RDBM(nn.Module):
 
             noise = preds.pred_noise 
             x_start = preds.pred_x_start 
+
+            if mask is not None:
+                x_start = self.data_consistency(x_start, mu, mask, dc_weight=dc_weight)
+                # noise must be re-derived from the corrected x_start so the
+                # rest of the sampling step stays internally consistent
+                noise = self.predict_noise_from_x_start(img, time_cond, mu, x_start)
 
             if time_next < 0:
                 img = x_start
@@ -262,7 +306,7 @@ class RDBM(nn.Module):
             return unnormalize_to_zero_to_one(img_list)
 
 
-    def sample(self, x_input=None, gt = None, batch_size=16, last=True):
+    def sample(self, x_input=None, gt = None, batch_size=16, last=True, mask=None, dc_weight=1.0):
         image_size, channels = self.image_size, self.channels
         sample_fn = self.ddim_sample
         if self.condition:
@@ -274,7 +318,7 @@ class RDBM(nn.Module):
         else:
             size = (batch_size, channels, image_size, image_size)
 
-        samples = sample_fn(x_input, gt, size, last=last)
+        samples = sample_fn(x_input, gt, size, last=last, mask=mask, dc_weight=dc_weight)
         return samples
 
     def q_sample(self, x_start, mu, t, noise=None):
