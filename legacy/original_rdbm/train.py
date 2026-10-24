@@ -21,7 +21,7 @@ from torchvision import transforms as T, utils
 from torch.utils.data import DataLoader
 from rdbm import RDBM 
 from networks import Unet
-from datasets_setting import RSDataset,set_seed
+from legacy.original_rdbm.datasets_setting import RSDataset,set_seed
 
 parser = ArgumentParser()
 parser.add_argument("--project_description", type=str, default="Residual Diffusion Bridge Model", help="Name of Project")

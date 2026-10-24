@@ -1,0 +1,16 @@
+# Runtime and training dependencies other than PyTorch/torchvision.
+# PyTorch is installed separately by setup_venv.sh so the CPU/CUDA build can
+# be selected for the machine that will run training.
+accelerate>=1.0,<2
+einops>=0.7,<1
+ema-pytorch>=0.7,<1
+h5py>=3.10,<4
+imageio>=2.31,<3
+ipykernel>=6,<8
+jupyterlab>=4,<5
+matplotlib>=3.7,<4
+numpy>=1.24,<3
+opencv-python-headless>=4.8,<5
+Pillow>=10,<13
+scikit-image>=0.22,<1
+tqdm>=4.66,<5
