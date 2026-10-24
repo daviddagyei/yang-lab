@@ -1,6 +1,6 @@
 # Multicoil MRI Reconstruction: Project Status and Roadmap
 
-**Last updated:** October 23, 2026
+**Last updated:** October 24, 2026
 **Compute:** NVIDIA RTX 6000 Ada Generation, PyTorch/CUDA
 **Primary study:** Retrospective multicoil brain MRI reconstruction at 2x, 4x,
 6x, and 8x acceleration
@@ -171,6 +171,22 @@ slice. It improved PSNR and NMSE over the original 4x RDBM, while SSIM decreased
 The executed report is
 [`notebooks/unrolled_rdbm_results.ipynb`](notebooks/unrolled_rdbm_results.ipynb).
 
+### Full diffusion-unrolled RDBM
+
+[`mri_diffusion_unrolled_rdbm/`](mri_diffusion_unrolled_rdbm/) implements the
+from-scratch, end-to-end unrolling of the complete sampled RDBM trajectory. It
+keeps the original ten reverse-time pairs (`99→89→...→9→-1`), the original
+deterministic bridge transitions, one shared timestep-conditioned U-Net, and a
+six-iteration CG-SENSE solve after every clean prediction. It uses the same
+loss weights, optimizer, 50-pass exposure, masks, splits, and validation-PSNR
+selection rule as the existing three-stage RDBM-derived model.
+
+The model never loads pretrained RDBM parameters. Its full real-data CUDA smoke
+test passed with finite loss and gradients, and the tiny ten-stage overfit gate
+reduced its objective. A non-checkpointed real-data update used 26.70 GiB peak
+allocated memory, fitting beside SwinMR on each 96 GB GPU. Training entry points
+are ready for 2x, 4x, 6x, and 8x; full training has not started.
+
 ### ASSCGD-inspired self-supervised diffusion model
 
 [`mri_asscgd/`](mri_asscgd/) implements a target-free 4x reconstruction track.
@@ -281,7 +297,7 @@ Every completed model follows the same evaluation rules:
 The project contains automated tests for complex transforms, masks, sensitivity
 maps, forward/adjoint physics, data consistency, datasets, models, gradients,
 checkpoint restoration, and metric aggregation. The latest full CPU suite passed
-all **79 tests**.
+all **85 tests**.
 
 ## Full model and acceleration roadmap
 
@@ -292,6 +308,7 @@ The intended end state is a controlled evaluation at all four acceleration rates
 | Zero-filled SENSE | Done | Done | Done | Done | Reference baseline |
 | RDBM | Done | Done | Done | Done | Training and test evaluation complete |
 | RDBM-derived unrolled | Planned | Done | Planned | Planned | 4x complete |
+| Full diffusion-unrolled RDBM | Ready | Ready | Ready | Ready | Multi-rate implementation and gates complete |
 | MoDL | Planned | Done | Planned | Planned | 4x complete |
 | ASSCGD-inspired | Planned | Done | Planned | Planned | 4x complete |
 | Variational Network | Planned | Training | Planned | Planned | 4x active |
