@@ -32,6 +32,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path)
     parser.add_argument("--precision", choices=("fp32", "bf16"), default="bf16")
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--max-stages",
+        type=int,
+        help="stop after this many unrolled stages; defaults to the full trajectory",
+    )
     return parser.parse_args()
 
 
@@ -52,6 +57,9 @@ def main() -> None:
     del checkpoint
     device = torch.device("cuda")
     model = model.to(device).eval()
+    output_stage = model.unroll_steps if args.max_stages is None else args.max_stages
+    if not 1 <= output_stage <= model.unroll_steps:
+        raise ValueError(f"max-stages must be between 1 and {model.unroll_steps}")
 
     dataset = MRISliceDataset(
         ROOT / "phase1/manifests" / f"{args.split}.jsonl",
@@ -73,6 +81,7 @@ def main() -> None:
             row.get("checkpoint_step") != step
             or row.get("split") != args.split
             or row.get("precision") != args.precision
+            or int(row.get("output_stage", model.unroll_steps)) != output_stage
             for row in rows
         ):
             raise ValueError(f"existing metrics do not match this run: {rows_path}")
@@ -80,6 +89,7 @@ def main() -> None:
     print(
         f"checkpoint={step} epoch={completed_epochs} acceleration="
         f"{data_config['acceleration']}x split={args.split} precision={args.precision} "
+        f"output_stage={output_stage} "
         f"completed={len(completed)}/{len(dataset)}",
         flush=True,
     )
@@ -106,6 +116,7 @@ def main() -> None:
                     batch["undersampled_kspace"],
                     batch["sensitivity_maps"],
                     batch["mask"],
+                    max_stages=output_stage,
                 )
             torch.cuda.synchronize(device)
             seconds = time.perf_counter() - started
@@ -120,6 +131,7 @@ def main() -> None:
                 "completed_epochs": completed_epochs,
                 "split": args.split,
                 "precision": args.precision,
+                "output_stage": output_stage,
                 "sample_index": sample_index,
                 "sample_id": sample_id,
                 "volume_id": str(batch["metadata"]["volume_id"][0]),
@@ -171,6 +183,7 @@ def main() -> None:
         "acceleration": int(data_config["acceleration"]),
         "split": args.split,
         "precision": args.precision,
+        "output_stage": output_stage,
         "initialization": "scratch",
         "architecture": "ten-stage diffusion-faithful RDBM with six-iteration CG-SENSE",
         **summarize_evaluation(rows),

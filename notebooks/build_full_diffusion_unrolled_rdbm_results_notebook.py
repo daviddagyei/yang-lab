@@ -109,6 +109,55 @@ for rate in RATES:
 show_table(rows,[(key,key) for key in rows[0]])
 """
         ),
+        md(
+            """
+## Validation-selected early-exit ablation
+
+This ablation asks whether the trained ten-stage model should stop before its
+final stage. The exit stage is selected **only on validation PSNR** (SSIM is the
+tie-break); that one fixed stage is then evaluated on the held-out test split.
+The original stage-10 result remains the primary model result.
+"""
+        ),
+        code(
+            """
+early={}
+for rate in RATES:
+    root=runs[rate][0]/'evaluation/early_exit'
+    selection_path=root/'selection.json'
+    if not selection_path.exists():
+        continue
+    selection=read_json(selection_path)
+    stage=int(selection['selected_stage']); step=int(selection['checkpoint_step'])
+    test_path=root/'test'/f'stage-{stage:02d}-step-{step:07d}'/'summary.json'
+    if test_path.exists(): early[rate]=(selection,read_json(test_path))
+
+if not early:
+    display(Markdown('Early-exit artifacts are not available yet. Run the validation-stage ablation for 2× and 4×, then rebuild this notebook.'))
+else:
+    fig,axes=plt.subplots(1,len(early),figsize=(5*len(early),3.4),squeeze=False)
+    for axis,(rate,(selection,test)) in zip(axes[0],sorted(early.items())):
+        candidates=sorted(selection['candidates'],key=lambda row:int(row['stage']))
+        stages=[int(row['stage']) for row in candidates]
+        psnr=[float(row['psnr']) for row in candidates]
+        chosen=int(selection['selected_stage'])
+        axis.plot(stages,psnr,marker='o')
+        axis.axvline(chosen,color='tab:green',linestyle='--',label=f'Selected stage {chosen}')
+        axis.set(xlabel='Output stage',ylabel='Validation PSNR (dB)',title=f'{rate}× validation')
+        axis.set_xticks(stages); axis.legend()
+    plt.tight_layout(); plt.show()
+
+    rows=[]
+    for rate,(selection,test) in sorted(early.items()):
+        stage=int(selection['selected_stage'])
+        final=runs[rate][3][METHOD]; selected=test[METHOD]
+        for label,result in (('Stage 10 (primary)',final),(f'Stage {stage} (validation-selected)',selected)):
+            rows.append({'Rate':f'{rate}×','Output':label,'PSNR':result['psnr'],'SSIM':result['ssim'],
+                         'NMSE':result['nmse'],'Residual':result['measurement_residual'],
+                         'Seconds/slice':result['seconds_per_slice']})
+    show_table(rows,[(key,key) for key in rows[0]])
+"""
+        ),
         md("## Comparison with existing RDBM variants"),
         code(
             """
@@ -172,6 +221,8 @@ for rate in RATES:
 - Checkpoint selection is validation-only; the test split is used once per rate.
 - Intermediate stages need not improve monotonically because the complete trajectory
   is optimized jointly. Stage 10 is the reported reconstruction.
+- The early-exit analysis is a separate ablation: its stage is chosen on validation,
+  never from the qualitative example or test performance.
 - Timing is hardware- and workload-dependent and is not a portable model property.
 """
         ),

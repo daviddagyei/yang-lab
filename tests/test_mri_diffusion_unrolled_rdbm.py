@@ -88,6 +88,26 @@ class DiffusionUnrolledRDBMTests(unittest.TestCase):
         self.assertIsInstance(trajectory, list)
         self.assertEqual(len(trajectory), model.unroll_steps + 1)
 
+    def test_early_exit_matches_requested_trajectory_stage(self) -> None:
+        model = tiny_model().eval()
+        batch = synthetic_batch()
+        trajectory = model(
+            batch["initial_reconstruction"], batch["undersampled_kspace"],
+            batch["sensitivity_maps"], batch["mask"], return_trajectory=True,
+        )
+        early = model(
+            batch["initial_reconstruction"], batch["undersampled_kspace"],
+            batch["sensitivity_maps"], batch["mask"], max_stages=2,
+        )
+        assert isinstance(trajectory, list)
+        assert isinstance(early, torch.Tensor)
+        torch.testing.assert_close(early, trajectory[2])
+        with self.assertRaisesRegex(ValueError, "max_stages"):
+            model(
+                batch["initial_reconstruction"], batch["undersampled_kspace"],
+                batch["sensitivity_maps"], batch["mask"], max_stages=0,
+            )
+
     def test_bridge_transition_matches_original_pred_x_start_equation(self) -> None:
         model = tiny_model()
         generator = torch.Generator().manual_seed(7)

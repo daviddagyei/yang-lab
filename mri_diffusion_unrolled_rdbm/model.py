@@ -199,14 +199,21 @@ class DiffusionUnrolledRDBM(nn.Module):
         mask: torch.Tensor,
         *,
         return_trajectory: bool = False,
+        max_stages: int | None = None,
     ) -> torch.Tensor | list[torch.Tensor]:
         """Run the complete sampled diffusion trajectory with CG after every prediction."""
 
         self._validate_inputs(initial, measured_kspace, sensitivity_maps, mask)
+        resolved_stages = self.unroll_steps if max_stages is None else int(max_stages)
+        if not 1 <= resolved_stages <= self.unroll_steps:
+            raise ValueError(
+                f"max_stages must be between 1 and {self.unroll_steps}, "
+                f"received {resolved_stages}"
+            )
         atb = adjoint_operator(measured_kspace, sensitivity_maps, mask)
         state = initial
         clean_trajectory = [initial]
-        for stage, pair in enumerate(self.time_pairs.tolist()):
+        for stage, pair in enumerate(self.time_pairs[:resolved_stages].tolist()):
             time, time_next = int(pair[0]), int(pair[1])
             timestep = torch.full(
                 (initial.shape[0],), time, dtype=torch.long, device=initial.device
