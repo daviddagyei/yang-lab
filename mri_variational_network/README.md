@@ -24,7 +24,7 @@ nonnegative data-term blocks as the official code. The real and imaginary
 filter tensors are optimized and projected jointly as one complex block.
 The official maximum-magnitude zero-filled input normalization is also used.
 
-The baseline uses the project's brain MRI data, retrospective 4x masks,
+The baseline uses the project's brain MRI data, retrospective 2x/4x/6x/8x masks,
 sensitivity maps, normalization, and frozen splits so that its results can be
 compared with the other models. The published batch size of 10 is retained:
 samples are grouped by spatial shape and shorter coil dimensions are
@@ -40,6 +40,19 @@ Run the publication-faithful training path with:
 
 ```bash
 bash scripts/train_variational_network_4x.sh
+```
+
+The rate-general runner trains, selects on validation, and evaluates one rate:
+
+```bash
+bash scripts/run_variational_network_rate.sh 2
+```
+
+On a two-GPU workstation, the remaining 2x, 6x, and 8x experiments are queued
+as two independent jobs followed by the third:
+
+```bash
+bash scripts/run_variational_network_remaining_2gpu.sh
 ```
 
 Adam remains available only as a labeled optimizer ablation through

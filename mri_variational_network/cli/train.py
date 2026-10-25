@@ -1,4 +1,4 @@
-"""Train the official-architecture Variational Network on frozen 4x data."""
+"""Train the official-architecture Variational Network at one acceleration."""
 
 from __future__ import annotations
 
@@ -32,6 +32,10 @@ def parse_arguments() -> argparse.Namespace:
         default=PROJECT_ROOT / "phase1" / "manifests" / "train.jsonl",
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--data-root", type=Path)
+    parser.add_argument(
+        "--acceleration", type=int, choices=(2, 4, 6, 8), default=4
+    )
     parser.add_argument(
         "--optimizer",
         choices=("ipalm", "adam"),
@@ -318,10 +322,11 @@ def main() -> None:
         split="train",
         normalization_quantile=1.0,
         mask_seed=args.mask_seed,
-        acceleration=4,
+        acceleration=args.acceleration,
+        data_root=args.data_root,
     )
     data_config = {
-        "acceleration": 4,
+        "acceleration": args.acceleration,
         "center_fraction": (
             base_dataset.mask_config.resolved_center_fraction
         ),
@@ -384,7 +389,8 @@ def main() -> None:
     )
     print(
         f"device={torch.cuda.get_device_name(0)} precision=fp32 "
-        f"slices={len(dataset)} batch_size={args.batch_size} "
+        f"acceleration={args.acceleration}x slices={len(dataset)} "
+        f"batch_size={args.batch_size} "
         f"optimizer={args.optimizer} {target} "
         f"stages={model.num_stages} filters={model.num_filters} "
         f"kernel={model.kernel_size} "

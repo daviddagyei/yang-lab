@@ -25,6 +25,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--split", choices=("val", "test"), default="val")
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--data-root", type=Path)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--max-samples", type=int)
     return parser.parse_args()
@@ -72,6 +73,7 @@ def main() -> None:
         acceleration=int(data_config["acceleration"]),
         center_fraction=float(data_config["center_fraction"]),
         mask_seed=int(data_config["mask_seed"]),
+        data_root=args.data_root,
     )
     expected_samples = len(dataset)
     if args.max_samples is not None:
@@ -88,7 +90,8 @@ def main() -> None:
     completed = {str(row["sample_id"]) for row in rows}
     print(
         f"checkpoint={step} optimizer={optimizer_name} "
-        f"epoch={completed_epochs} split={args.split} device={device} "
+        f"epoch={completed_epochs} acceleration={data_config['acceleration']}x "
+        f"split={args.split} device={device} "
         f"completed={len(completed)}/{expected_samples}",
         flush=True,
     )
@@ -182,6 +185,7 @@ def main() -> None:
         "checkpoint_step": step,
         "completed_epochs": completed_epochs,
         "optimizer": optimizer_name,
+        "acceleration": int(data_config["acceleration"]),
         "split": args.split,
         "precision": "fp32",
         "architecture": "Hammernik et al. Variational Network",
