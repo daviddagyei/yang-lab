@@ -111,7 +111,7 @@ show_table(rows,[(key,key) for key in rows[0]])
         ),
         md(
             """
-## Validation-selected early-exit ablation
+## Early-exit ablation: validation selection, test evaluation
 
 This ablation asks whether the trained ten-stage model should stop before its
 final stage. The exit stage is selected **only on validation PSNR** (SSIM is the
@@ -151,11 +151,40 @@ else:
     for rate,(selection,test) in sorted(early.items()):
         stage=int(selection['selected_stage'])
         final=runs[rate][3][METHOD]; selected=test[METHOD]
-        for label,result in (('Stage 10 (primary)',final),(f'Stage {stage} (validation-selected)',selected)):
+        for label,result in (('Stage 10 (test baseline)',final),(f'Stage {stage} (test; selected on validation)',selected)):
             rows.append({'Rate':f'{rate}×','Output':label,'PSNR':result['psnr'],'SSIM':result['ssim'],
                          'NMSE':result['nmse'],'Residual':result['measurement_residual'],
                          'Seconds/slice':result['seconds_per_slice']})
     show_table(rows,[(key,key) for key in rows[0]])
+"""
+        ),
+        md(
+            """
+### Post-hoc Stage-6 test probe at 4×
+
+This optional probe directly evaluates Stage 6 on test for diagnostic comparison.
+Because Stage 6 was proposed after inspecting the completed experiment, it is
+**exploratory** and cannot replace the validation-selected Stage 9 result.
+"""
+        ),
+        code(
+            """
+if 4 in RATES:
+    step=int(runs[4][1]['checkpoint_step'])
+    path=runs[4][0]/'evaluation/exploratory_test'/f'stage-06-step-{step:07d}'/'summary.json'
+    if not path.exists():
+        display(Markdown('The exploratory 4× Stage-6 test result has not been pulled yet.'))
+    else:
+        stage6=read_json(path)[METHOD]
+        stage9_test=early.get(4,(None,None))[1]
+        candidates=[('Stage 6 (post-hoc test probe)',stage6)]
+        if stage9_test is not None:
+            candidates.insert(0,('Stage 9 (validation-selected test)',stage9_test[METHOD]))
+        candidates.insert(0,('Stage 10 (test baseline)',runs[4][3][METHOD]))
+        rows=[{'Output':label,'PSNR':result['psnr'],'SSIM':result['ssim'],
+               'NMSE':result['nmse'],'Residual':result['measurement_residual'],
+               'Seconds/slice':result['seconds_per_slice']} for label,result in candidates]
+        show_table(rows,[(key,key) for key in rows[0]])
 """
         ),
         md("## Comparison with existing RDBM variants"),
