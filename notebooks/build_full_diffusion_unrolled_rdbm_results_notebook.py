@@ -49,7 +49,7 @@ from html import escape
 import json, os, re
 import matplotlib.pyplot as plt
 import numpy as np
-from IPython.display import HTML, Image, display
+from IPython.display import HTML, Image, Markdown, display
 
 ROOT = Path.cwd().parent if Path.cwd().name == 'notebooks' else Path.cwd()
 DATA_ROOT = Path(os.environ.get('MRI_DATA_ROOT', '/data/david_agyei/nyu-dataset'))
@@ -153,7 +153,11 @@ plt.tight_layout(); plt.show()
             """
 print(f"Matched sample: {progression['sample_id']} ({progression['selection_reason']})")
 for rate in RATES:
-    display(Image(filename=str(ROOT/f'results/full_diffusion_unrolled_rdbm/qualitative/progression_{rate}x.png'),width=2400))
+    figure_path=ROOT/f'results/full_diffusion_unrolled_rdbm/qualitative/progression_{rate}x.png'
+    if not figure_path.exists() or str(rate) not in progression.get('rates', {}):
+        display(Markdown(f'**Missing qualitative artifacts for {rate}×. Re-run the result collector for this rate.**'))
+        continue
+    display(Image(filename=str(figure_path),width=2400))
     rows=[{'Stage':name,'PSNR':value['psnr'],'SSIM':value['ssim'],'NMSE':value['nmse']}
           for name,value in progression['rates'][str(rate)]['metrics'].items()]
     show_table(rows,[(key,key) for key in rows[0]])

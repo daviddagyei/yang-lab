@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import defaultdict
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -51,18 +52,29 @@ def main() -> None:
         for line in (reference_test / "slice_metrics.jsonl").read_text().splitlines()
         if line
     ]
-    gains = np.array([
-        row["diffusion_unrolled_rdbm_psnr"] - row["zero_filled_psnr"]
-        for row in reference_rows
-    ])
-    median_gain = float(np.median(gains))
+    rows_by_volume: dict[str, list[dict]] = defaultdict(list)
+    for row in reference_rows:
+        rows_by_volume[str(row["volume_id"])].append(row)
+    volume_gains = {
+        volume_id: float(
+            np.mean(
+                [
+                    row["diffusion_unrolled_rdbm_psnr"] - row["zero_filled_psnr"]
+                    for row in rows
+                ]
+            )
+        )
+        for volume_id, rows in rows_by_volume.items()
+    }
+    median_volume_gain = float(np.median(list(volume_gains.values())))
+    representative_volume = min(
+        volume_gains,
+        key=lambda volume_id: abs(volume_gains[volume_id] - median_volume_gain),
+    )
+    volume_rows = rows_by_volume[representative_volume]
+    middle_slice = float(np.median([int(row["slice_index"]) for row in volume_rows]))
     representative = min(
-        reference_rows,
-        key=lambda row: abs(
-            row["diffusion_unrolled_rdbm_psnr"]
-            - row["zero_filled_psnr"]
-            - median_gain
-        ),
+        volume_rows, key=lambda row: abs(int(row["slice_index"]) - middle_slice)
     )
     sample_index = int(representative["sample_index"])
     device = torch.device("cuda")
@@ -71,7 +83,10 @@ def main() -> None:
     metadata: dict[str, object] = {
         "sample_index": sample_index,
         "sample_id": representative["sample_id"],
-        "selection_reason": f"test slice closest to median {selection_rate}x PSNR gain",
+        "selection_reason": (
+            f"central slice of the {selection_rate}x test volume closest to the "
+            "median volume-level PSNR gain"
+        ),
         "rates": {},
     }
     OUTPUT.mkdir(parents=True, exist_ok=True)

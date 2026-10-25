@@ -9,7 +9,18 @@ remote_data_root="${FULL_UNROLLED_REMOTE_DATA_ROOT:-/data/ms_safari/david_agyei/
 local_data_root="${MRI_DATA_ROOT:-/data/david_agyei/nyu-dataset}"
 remote_output_root="${FULL_UNROLLED_REMOTE_OUTPUT_ROOT:-$remote_data_root/derived}"
 local_output_root="${FULL_UNROLLED_OUTPUT_ROOT:-$local_data_root/derived}"
-rates="${FULL_UNROLLED_REPORT_RATES:-2 4}"
+if (( $# == 0 )); then
+  requested_rates=(2 4)
+else
+  requested_rates=("$@")
+fi
+for rate in "${requested_rates[@]}"; do
+  case "$rate" in
+    2|4|6|8) ;;
+    *) echo "Unsupported report acceleration: $rate" >&2; exit 2 ;;
+  esac
+done
+rates="${requested_rates[*]}"
 
 control_dir="$(mktemp -d /tmp/full-unrolled-ssh.XXXXXX)"
 control_socket="$control_dir/control"
@@ -43,7 +54,7 @@ FULL_UNROLLED_REPORT_RATES="$rates" \
 REMOTE
 
 ssh_transport="ssh -o ControlPath=$control_socket -o StrictHostKeyChecking=accept-new"
-for rate in $rates; do
+for rate in "${requested_rates[@]}"; do
   remote_run="$remote_output_root/full_diffusion_unrolled_rdbm_${rate}x_scratch"
   local_run="$local_output_root/full_diffusion_unrolled_rdbm_${rate}x_scratch"
   mkdir -p "$local_run/evaluation"
