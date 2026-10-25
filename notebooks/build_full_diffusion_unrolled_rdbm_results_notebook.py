@@ -1,0 +1,181 @@
+"""Build the results notebook for the full diffusion-unrolled RDBM."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import nbformat as nbf
+
+
+ROOT = Path(__file__).resolve().parents[1]
+OUTPUT = ROOT / "notebooks/full_diffusion_unrolled_rdbm_results.ipynb"
+
+
+def md(value: str):
+    return nbf.v4.new_markdown_cell(value.strip())
+
+
+def code(value: str):
+    return nbf.v4.new_code_cell(value.strip())
+
+
+def main() -> None:
+    rates = tuple(int(value) for value in os.environ.get("FULL_UNROLLED_REPORT_RATES", "2 4").split())
+    rate_text = ", ".join(f"{rate}×" for rate in rates)
+    notebook = nbf.v4.new_notebook()
+    notebook["metadata"] = {
+        "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+        "language_info": {"name": "python", "version": "3"},
+    }
+    notebook["cells"] = [
+        md(
+            f"""
+# Full diffusion-unrolled RDBM: {rate_text}
+
+This report covers the completed rates from the from-scratch, end-to-end model.
+Unlike the earlier three-stage RDBM-derived network, this architecture preserves
+all ten reverse-diffusion refinements and follows every refinement with a
+six-iteration differentiable CG-SENSE solve.
+
+Each rate is trained independently for 50 passes. Ten checkpoints are screened
+using validation PSNR before the selected checkpoint is evaluated once on test.
+"""
+        ),
+        code(
+            f"""
+from pathlib import Path
+from html import escape
+import json, os, re
+import matplotlib.pyplot as plt
+import numpy as np
+from IPython.display import HTML, Image, display
+
+ROOT = Path.cwd().parent if Path.cwd().name == 'notebooks' else Path.cwd()
+DATA_ROOT = Path(os.environ.get('MRI_DATA_ROOT', '/data/david_agyei/nyu-dataset'))
+OUTPUT_ROOT = Path(os.environ.get('FULL_UNROLLED_OUTPUT_ROOT', DATA_ROOT/'derived'))
+RATES = {rates!r}
+METHOD = 'diffusion_unrolled_rdbm'
+def read_json(path): return json.loads(Path(path).read_text())
+def artifacts(rate):
+    run=OUTPUT_ROOT/f'full_diffusion_unrolled_rdbm_{{rate}}x_scratch'; evaluation=run/'evaluation'
+    selection=read_json(evaluation/'best_validation_checkpoint.json')
+    test_dir=evaluation/'test'/f"step-{{selection['checkpoint_step']:07d}}"
+    return run,selection,test_dir,read_json(test_dir/'summary.json')
+def show_table(rows,columns,precision=4,bold_best=None):
+    bold_best=bold_best or {{}}; best={{}}
+    for key,direction in bold_best.items():
+        values=[row[key] for row in rows if isinstance(row[key],(int,float)) and np.isfinite(row[key])]
+        best[key]=(max if direction=='max' else min)(values)
+    def render(value): return f'{{value:.{{precision}}f}}' if isinstance(value,float) else escape(str(value))
+    header=''.join(f'<th style="text-align:left;padding:4px 10px">{{escape(label)}}</th>' for key,label in columns)
+    def cell(row,key):
+        value=render(row[key])
+        if key in best and np.isclose(row[key],best[key]): value=f'<strong>{{value}}</strong>'
+        return f'<td style="padding:4px 10px">{{value}}</td>'
+    body=''.join('<tr>'+''.join(cell(row,key) for key,label in columns)+'</tr>' for row in rows)
+    display(HTML(f'<table><thead><tr>{{header}}</tr></thead><tbody>{{body}}</tbody></table>'))
+runs={{rate:artifacts(rate) for rate in RATES}}
+progression=read_json(ROOT/'results/full_diffusion_unrolled_rdbm/qualitative/progression.json')
+"""
+        ),
+        md("## Validation checkpoint selection"),
+        code(
+            """
+rows=[]
+fig,axes=plt.subplots(1,len(RATES),figsize=(5*len(RATES),3.4),squeeze=False)
+for axis,rate in zip(axes[0],RATES):
+    selection=runs[rate][1]; candidates=selection['candidates']
+    rows.append({'Rate':f'{rate}×','Selected epoch':selection['completed_epochs'],
+                 'Step':selection['checkpoint_step'],'PSNR':selection['validation_metrics']['psnr'],
+                 'SSIM':selection['validation_metrics']['ssim'],'NMSE':selection['validation_metrics']['nmse']})
+    axis.plot([x['completed_epochs'] for x in candidates],[x[METHOD]['psnr'] for x in candidates],marker='o')
+    axis.axvline(selection['completed_epochs'],color='tab:green',linestyle='--')
+    axis.set(xlabel='Epoch',ylabel='Validation PSNR (dB)',title=f'{rate}×')
+show_table(rows,[(key,key) for key in rows[0]])
+plt.tight_layout(); plt.show()
+"""
+        ),
+        md("## Held-out test results"),
+        code(
+            """
+rows=[]
+for rate in RATES:
+    test=runs[rate][3]; zf=test['zero_filled']; result=test[METHOD]
+    rows.append({'Rate':f'{rate}×','ZF PSNR':zf['psnr'],'Full unrolled PSNR':result['psnr'],
+                 'PSNR gain':result['psnr']-zf['psnr'],'ZF SSIM':zf['ssim'],
+                 'Full unrolled SSIM':result['ssim'],'Complex NMSE':result['nmse'],
+                 'Residual':result['measurement_residual'],'Seconds/slice':result['seconds_per_slice']})
+show_table(rows,[(key,key) for key in rows[0]])
+"""
+        ),
+        md("## Comparison with existing RDBM variants"),
+        code(
+            """
+comparison=[]
+for rate in RATES:
+    full=runs[rate][3][METHOD]
+    rdbm_path=(DATA_ROOT/'derived'/('rdbm_full_bf16' if rate==4 else f'rdbm_{rate}x_bf16')/'evaluation/test/step-0094900/summary.json')
+    if rdbm_path.exists():
+        base=read_json(rdbm_path)['rdbm']
+        comparison.append({'Rate':f'{rate}×','Model':'Original RDBM',**{k:base[k] for k in ('psnr','ssim','nmse','measurement_residual')}})
+    comparison.append({'Rate':f'{rate}×','Model':'Full diffusion-unrolled',**{k:full[k] for k in ('psnr','ssim','nmse','measurement_residual')}})
+if 4 in RATES:
+    path=DATA_ROOT/'derived/unrolled_rdbm_4x_scratch/evaluation/test/step-0037960/summary.json'
+    if path.exists():
+        value=read_json(path)['unrolled_rdbm']
+        comparison.insert(next(i for i,row in enumerate(comparison) if row['Rate']=='4×' and row['Model']=='Full diffusion-unrolled'),
+                          {'Rate':'4×','Model':'Three-stage RDBM-derived',**{k:value[k] for k in ('psnr','ssim','nmse','measurement_residual')}})
+formatted=[{'Rate':row['Rate'],'Model':row['Model'],'PSNR ↑':row['psnr'],'SSIM ↑':row['ssim'],
+            'NMSE ↓':row['nmse'],'Residual ↓':row['measurement_residual']} for row in comparison]
+show_table(formatted,[(key,key) for key in formatted[0]])
+"""
+        ),
+        md("## Training trajectories"),
+        code(
+            """
+pattern=re.compile(r'epoch_complete=(\d+)/\d+ step=(\d+) mean_loss=([0-9.eE+-]+).*?mean_ssim_loss=([0-9.eE+-]+) mean_measurement=([0-9.eE+-]+)')
+fig,axes=plt.subplots(1,2,figsize=(11,3.5))
+for rate in RATES:
+    records=[match.groups() for line in (runs[rate][0]/'train.log').read_text().splitlines() if (match:=pattern.search(line))]
+    records=list({int(row[0]):row for row in records}.values()); records.sort(key=lambda row:int(row[0]))
+    epochs=[int(row[0]) for row in records]
+    axes[0].plot(epochs,[float(row[2]) for row in records],label=f'{rate}×')
+    axes[1].plot(epochs,[float(row[4]) for row in records],label=f'{rate}×')
+axes[0].set(xlabel='Epoch',ylabel='Mean loss',title='Training objective')
+axes[1].set(xlabel='Epoch',ylabel='Mean measurement loss',title='Measurement component')
+for axis in axes: axis.legend()
+plt.tight_layout(); plt.show()
+"""
+        ),
+        md("## Reverse-diffusion and CG-SENSE progression"),
+        code(
+            """
+print(f"Matched sample: {progression['sample_id']} ({progression['selection_reason']})")
+for rate in RATES:
+    display(Image(filename=str(ROOT/f'results/full_diffusion_unrolled_rdbm/qualitative/progression_{rate}x.png'),width=2400))
+    rows=[{'Stage':name,'PSNR':value['psnr'],'SSIM':value['ssim'],'NMSE':value['nmse']}
+          for name,value in progression['rates'][str(rate)]['metrics'].items()]
+    show_table(rows,[(key,key) for key in rows[0]])
+"""
+        ),
+        md(
+            """
+## Interpretation
+
+- The full model is a genuine ten-stage unrolling of the sampled RDBM trajectory,
+  with explicit CG-SENSE consistency after every learned clean prediction.
+- Checkpoint selection is validation-only; the test split is used once per rate.
+- Intermediate stages need not improve monotonically because the complete trajectory
+  is optimized jointly. Stage 10 is the reported reconstruction.
+- Timing is hardware- and workload-dependent and is not a portable model property.
+"""
+        ),
+    ]
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    nbf.write(notebook, OUTPUT)
+    print(f"Wrote {OUTPUT}")
+
+
+if __name__ == "__main__":
+    main()
