@@ -133,7 +133,7 @@ for rate in RATES:
     if test_path.exists(): early[rate]=(selection,read_json(test_path))
 
 if not early:
-    display(Markdown('Early-exit artifacts are not available yet. Run the validation-stage ablation for 2× and 4×, then rebuild this notebook.'))
+        display(Markdown('Early-exit artifacts are not available yet for the requested rates. Run the validation-stage ablation, then rebuild this notebook.'))
 else:
     fig,axes=plt.subplots(1,len(early),figsize=(5*len(early),3.4),squeeze=False)
     for axis,(rate,(selection,test)) in zip(axes[0],sorted(early.items())):
