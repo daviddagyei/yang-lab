@@ -133,6 +133,10 @@ def reconstruct_with_adaptation(
     if adaptation_iterations < 0 or adaptation_learning_rate <= 0:
         raise ValueError("invalid AdaDiff adaptation settings")
     model = copy.deepcopy(trained_generator).to(batch["initial_reconstruction"].device)
+    # EMA models are intentionally frozen during prior training. Test-time
+    # adaptation operates on a private copy, so re-enable gradients on that
+    # copy without mutating the stored EMA prior.
+    model.requires_grad_(True)
     model.eval()
     rapid = (
         rapid_reconstruct(model, batch, schedule=schedule, seed=seed, start=rapid_start)

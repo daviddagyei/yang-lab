@@ -16,6 +16,7 @@ from mri_adadiff import (
     build_adadiff_generator,
     hard_data_consistency,
     rapid_reconstruct,
+    reconstruct_with_adaptation,
     summarize_evaluation,
 )
 from mri_reconstruction import complex_to_channels, forward_operator, measurement_residual
@@ -186,6 +187,20 @@ class AdaDiffTests(unittest.TestCase):
         loss.backward()
         self.assertTrue(torch.isfinite(loss))
         self.assertTrue(any(parameter.grad is not None for parameter in model.parameters()))
+
+    def test_adaptation_reenables_gradients_on_frozen_ema_copy(self) -> None:
+        model = tiny_generator().eval().requires_grad_(False)
+        batch = synthetic_batch()
+        result = reconstruct_with_adaptation(
+            model,
+            batch,
+            schedule=DiffusionSchedule(timesteps=2),
+            adaptation_iterations=1,
+            rapid_initial=batch["initial_reconstruction"],
+        )
+        self.assertIsNotNone(result.initial_adaptation_loss)
+        self.assertIsNotNone(result.final_adaptation_loss)
+        self.assertTrue(all(not parameter.requires_grad for parameter in model.parameters()))
 
     def test_trainer_checkpoint_roundtrip(self) -> None:
         trainer = AdaDiffTrainer(
