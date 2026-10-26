@@ -1,6 +1,6 @@
 """AdaDiff adaptive diffusion prior for accelerated multicoil MRI."""
 
-from .dataset import AdaDiffPriorDataset, prior_collate
+from .dataset import AdaDiffPriorDataset, grouped_prior_batch_schedule, prior_collate
 from .diffusion import DiffusionSchedule
 from .evaluation import aggregate_volume_metrics, summarize_evaluation
 from .model import (
@@ -26,6 +26,7 @@ __all__ = [
     "AdaDiffDiscriminator",
     "AdaDiffGenerator",
     "AdaDiffPriorDataset",
+    "grouped_prior_batch_schedule",
     "AdaDiffReconstruction",
     "AdaDiffTrainer",
     "DiffusionSchedule",

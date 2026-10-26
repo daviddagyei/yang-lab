@@ -29,6 +29,12 @@ class AdaDiffPriorDataset(Dataset[dict[str, Any]]):
     def __len__(self) -> int:
         return len(self.source)
 
+    def batch_group_key(self, index: int) -> tuple[int, int]:
+        """Return the target-image shape that must match within a batch."""
+
+        _, reconstruction_shape = self.source.batch_group_key(index)
+        return reconstruction_shape
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         sample = self.source[index]
         target = channels_to_complex(sample["target"], channel_dim=0)
@@ -50,5 +56,37 @@ def prior_collate(samples: list[Mapping[str, Any]]) -> dict[str, Any]:
         for key in samples[0]["metadata"]
     }
     return {"image": torch.stack([sample["image"] for sample in samples]), "metadata": metadata}
+
+
+def grouped_prior_batch_schedule(
+    dataset: AdaDiffPriorDataset,
+    *,
+    batch_size: int,
+    seed: int,
+) -> list[list[int]]:
+    """Build deterministic full batches without mixing target spatial shapes."""
+
+    if batch_size <= 0:
+        raise ValueError("batch size must be positive")
+    groups: dict[tuple[int, int], list[int]] = {}
+    for index in range(len(dataset)):
+        groups.setdefault(dataset.batch_group_key(index), []).append(index)
+    generator = torch.Generator().manual_seed(seed)
+    batches: list[list[int]] = []
+    for indices in groups.values():
+        order = torch.randperm(len(indices), generator=generator).tolist()
+        shuffled = [indices[position] for position in order]
+        for start in range(0, len(shuffled), batch_size):
+            batch = shuffled[start : start + batch_size]
+            if len(batch) < batch_size:
+                missing = batch_size - len(batch)
+                repeats = (
+                    shuffled
+                    * ((missing + len(shuffled) - 1) // len(shuffled))
+                )[:missing]
+                batch.extend(repeats)
+            batches.append(batch)
+    batch_order = torch.randperm(len(batches), generator=generator).tolist()
+    return [batches[position] for position in batch_order]
 
 

@@ -9,11 +9,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from mri_adadiff import (
+    AdaDiffPriorDataset,
     AdaDiffTrainer,
     DiffusionSchedule,
     acquired_kspace_l1,
     build_adadiff_discriminator,
     build_adadiff_generator,
+    grouped_prior_batch_schedule,
     hard_data_consistency,
     rapid_reconstruct,
     reconstruct_with_adaptation,
@@ -64,6 +66,25 @@ def synthetic_batch() -> dict[str, torch.Tensor]:
 
 
 class AdaDiffTests(unittest.TestCase):
+    def test_grouped_prior_batches_do_not_mix_spatial_shapes(self) -> None:
+        class Source:
+            def __len__(self) -> int:
+                return 6
+
+            def batch_group_key(self, index: int):
+                reconstruction = (8, 8) if index < 4 else (10, 10)
+                return ((12, 12), reconstruction)
+
+        dataset = AdaDiffPriorDataset.__new__(AdaDiffPriorDataset)
+        dataset.source = Source()
+        dataset.quantile = 0.99
+        batches = grouped_prior_batch_schedule(dataset, batch_size=2, seed=7)
+        self.assertEqual(len(batches), 3)
+        self.assertTrue(all(len(batch) == 2 for batch in batches))
+        for batch in batches:
+            shapes = {dataset.batch_group_key(index) for index in batch}
+            self.assertEqual(len(shapes), 1)
+
     def test_fir_resampling_matches_official_native_math(self) -> None:
         value = torch.randn(1, 2, 6, 6, requires_grad=True)
         kernel_1d = torch.tensor([1.0, 3.0, 3.0, 1.0])
@@ -141,6 +162,19 @@ class AdaDiffTests(unittest.TestCase):
         self.assertEqual(logits.shape, (2,))
         logits.mean().backward()
         self.assertTrue(any(parameter.grad is not None for parameter in generator.parameters()))
+
+    def test_paired_discriminator_forward_preserves_separate_batch_statistics(self) -> None:
+        discriminator = tiny_discriminator().eval()
+        condition = torch.randn(2, 2, 8, 8)
+        first = torch.randn_like(condition)
+        second = torch.randn_like(condition)
+        time = torch.tensor([1, 3])
+        expected_first = discriminator(first, time, condition)
+        expected_second = discriminator(second, time, condition)
+        actual = discriminator(first, time, condition, second)
+        self.assertIsInstance(actual, tuple)
+        torch.testing.assert_close(actual[0], expected_first)
+        torch.testing.assert_close(actual[1], expected_second)
 
     def test_hard_data_consistency_reduces_residual(self) -> None:
         batch = synthetic_batch()
