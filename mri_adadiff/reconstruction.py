@@ -18,6 +18,18 @@ from mri_reconstruction import (
 
 from .diffusion import DiffusionSchedule
 from .model import AdaDiffGenerator
+from .spatial import center_pad_to_size, remove_center_padding
+
+
+def _generator_forward(
+    generator_model: AdaDiffGenerator,
+    image: torch.Tensor,
+    timesteps: torch.Tensor,
+    latent: torch.Tensor,
+) -> torch.Tensor:
+    padded, padding = center_pad_to_size(image, generator_model.image_size)
+    prediction = generator_model(padded, timesteps, latent)
+    return remove_center_padding(prediction, padding)
 
 
 def hard_data_consistency(
@@ -89,7 +101,7 @@ def rapid_reconstruct(
             device=initial.device,
             generator=random,
         )
-        predicted_clean = generator_model(state, timesteps, latent)
+        predicted_clean = _generator_forward(generator_model, state, timesteps, latent)
         predicted_clean = hard_data_consistency(
             predicted_clean,
             batch["undersampled_kspace"],
@@ -106,7 +118,7 @@ def rapid_reconstruct(
         last_time, last_latent = timesteps, latent
     # The released code performs this final t=0 generator projection after the
     # eight posterior transitions; retain it for exact behavioral alignment.
-    return generator_model(state, last_time, last_latent)
+    return _generator_forward(generator_model, state, last_time, last_latent)
 
 
 @dataclass
@@ -167,7 +179,7 @@ def reconstruct_with_adaptation(
     model.train()
     for iteration in range(adaptation_iterations):
         optimizer.zero_grad(set_to_none=True)
-        prediction = model(rapid, time, latent)
+        prediction = _generator_forward(model, rapid, time, latent)
         loss = acquired_kspace_l1(
             prediction,
             batch["undersampled_kspace"],
@@ -187,7 +199,7 @@ def reconstruct_with_adaptation(
         optimizer.step()
     model.eval()
     with torch.no_grad():
-        prediction = model(rapid, time, latent)
+        prediction = _generator_forward(model, rapid, time, latent)
         final_loss = acquired_kspace_l1(
             prediction,
             batch["undersampled_kspace"],

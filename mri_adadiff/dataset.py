@@ -11,6 +11,8 @@ from torch.utils.data import Dataset
 from mri_data import MRISliceDataset
 from mri_reconstruction import channels_to_complex, complex_to_channels, magnitude_scale
 
+from .spatial import center_pad_to_size
+
 
 class AdaDiffPriorDataset(Dataset[dict[str, Any]]):
     """Expose fully sampled images without masks or measurements to the prior.
@@ -20,11 +22,20 @@ class AdaDiffPriorDataset(Dataset[dict[str, Any]]):
     that input scale, leaving a target-only unconditional training image.
     """
 
-    def __init__(self, source: MRISliceDataset, *, quantile: float = 0.99) -> None:
+    def __init__(
+        self,
+        source: MRISliceDataset,
+        *,
+        quantile: float = 0.99,
+        image_size: int = 320,
+    ) -> None:
         if not 0.0 < quantile <= 1.0:
             raise ValueError("quantile must be in (0, 1]")
+        if image_size <= 0:
+            raise ValueError("image size must be positive")
         self.source = source
         self.quantile = quantile
+        self.image_size = image_size
 
     def __len__(self) -> int:
         return len(self.source)
@@ -32,15 +43,16 @@ class AdaDiffPriorDataset(Dataset[dict[str, Any]]):
     def batch_group_key(self, index: int) -> tuple[int, int]:
         """Return the target-image shape that must match within a batch."""
 
-        _, reconstruction_shape = self.source.batch_group_key(index)
-        return reconstruction_shape
+        return (self.image_size, self.image_size)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         sample = self.source[index]
         target = channels_to_complex(sample["target"], channel_dim=0)
         target = target / magnitude_scale(target, self.quantile)
+        image = complex_to_channels(target, channel_dim=0)
+        image, _ = center_pad_to_size(image, self.image_size)
         return {
-            "image": complex_to_channels(target, channel_dim=0),
+            "image": image,
             "metadata": sample["metadata"],
         }
 

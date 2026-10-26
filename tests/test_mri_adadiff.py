@@ -21,8 +21,14 @@ from mri_adadiff import (
     reconstruct_with_adaptation,
     summarize_evaluation,
 )
-from mri_reconstruction import complex_to_channels, forward_operator, measurement_residual
+from mri_reconstruction import (
+    channels_to_complex,
+    complex_to_channels,
+    forward_operator,
+    measurement_residual,
+)
 from mri_adadiff.model import DownsampleConv2d, ddpm_conv, downsample, upsample
+from mri_adadiff.spatial import center_pad_to_size, remove_center_padding
 
 
 def tiny_generator():
@@ -66,6 +72,13 @@ def synthetic_batch() -> dict[str, torch.Tensor]:
 
 
 class AdaDiffTests(unittest.TestCase):
+    def test_fixed_size_padding_roundtrip(self) -> None:
+        for shape in ((320, 320), (320, 270), (320, 260), (276, 276), (213, 213)):
+            image = torch.randn(2, *shape)
+            padded, padding = center_pad_to_size(image, 320)
+            self.assertEqual(tuple(padded.shape), (2, 320, 320))
+            torch.testing.assert_close(remove_center_padding(padded, padding), image)
+
     def test_grouped_prior_batches_do_not_mix_spatial_shapes(self) -> None:
         class Source:
             def __len__(self) -> int:
@@ -78,6 +91,7 @@ class AdaDiffTests(unittest.TestCase):
         dataset = AdaDiffPriorDataset.__new__(AdaDiffPriorDataset)
         dataset.source = Source()
         dataset.quantile = 0.99
+        dataset.image_size = 320
         batches = grouped_prior_batch_schedule(dataset, batch_size=2, seed=7)
         self.assertEqual(len(batches), 3)
         self.assertTrue(all(len(batch) == 2 for batch in batches))
@@ -205,6 +219,28 @@ class AdaDiffTests(unittest.TestCase):
         first = rapid_reconstruct(model, batch, schedule=schedule, seed=9)
         second = rapid_reconstruct(model, batch, schedule=schedule, seed=9)
         torch.testing.assert_close(first, second)
+
+    def test_rapid_diffusion_restores_non_square_shape(self) -> None:
+        batch = synthetic_batch()
+        target = channels_to_complex(batch["target"], channel_dim=1)[..., :6]
+        maps = batch["sensitivity_maps"][..., :6]
+        mask = batch["mask"][..., :6]
+        kspace = forward_operator(target, maps, mask)
+        rectangular = {
+            **batch,
+            "initial_reconstruction": batch["initial_reconstruction"][..., :6],
+            "undersampled_kspace": kspace,
+            "sensitivity_maps": maps,
+            "mask": mask,
+            "target": batch["target"][..., :6],
+        }
+        reconstruction = rapid_reconstruct(
+            tiny_generator(),
+            rectangular,
+            schedule=DiffusionSchedule(timesteps=2),
+            seed=9,
+        )
+        self.assertEqual(reconstruction.shape, rectangular["target"].shape)
 
     def test_adaptation_loss_has_generator_gradients(self) -> None:
         model = tiny_generator()

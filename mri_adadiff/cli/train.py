@@ -79,7 +79,7 @@ def main() -> None:
         acceleration=4,
         data_root=args.data_root,
     )
-    dataset = AdaDiffPriorDataset(source)
+    dataset = AdaDiffPriorDataset(source, image_size=320)
     def build_epoch_loader(epoch: int) -> DataLoader:
         global_batches = grouped_prior_batch_schedule(
             dataset,
@@ -118,6 +118,8 @@ def main() -> None:
             "train_slices": len(source),
             "prior_normalization_quantile": 0.99,
             "operator_independent": True,
+            "model_image_size": 320,
+            "spatial_adapter": "center_zero_pad_then_crop",
         },
         device=device,
     )
