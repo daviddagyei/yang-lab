@@ -1,26 +1,33 @@
 # Physics-guided MRI RDBM
 
-This package preserves the project's conditional Residual Diffusion Bridge Model
-and adapts its U-Net from three RGB channels to two real/imaginary MRI channels.
-The model consumes the normalized zero-filled SENSE image from `mri_data` and
-applies the multi-coil consistency operator after each reverse-diffusion update.
+This package adapts the repository's conditional Residual Diffusion Bridge Model
+(RDBM), originally written for paired RGB restoration, to supervised complex
+multicoil brain MRI reconstruction.
 
-Training combines real/imaginary L1 loss, magnitude L1 loss, and normalized
-measured-k-space residual. Inputs retain their input-derived MRI normalization;
-the RGB `[0, 1]` conversion and clipping are not used. The dedicated
-`python -m mri_model.cli.train` entry point reads HDF5 data directly and has no PNG or rain-removal
-path.
+## Preserved from the starting RDBM
 
-The default checkpoint location is
-`/data/david_agyei/nyu-dataset/derived/rdbm`. Full training should start only
-after the one-batch and tiny-overfit gates pass.
+- conditional U-Net and residual diffusion-bridge formulation;
+- 100 training diffusion times with `pred_x_start` supervision;
+- ten deterministic reverse-diffusion steps at inference; and
+- one shared, timestep-conditioned network across the reverse trajectory.
 
-Run the real one-slice overfit gate with:
+## Adapted for this study
 
-```bash
-python -m mri_model.overfit_test --steps 25
-```
+- RGB input/output became two real/imaginary channels; RGB range conversion and
+  clipping were removed;
+- the condition is a normalized zero-filled SENSE reconstruction rather than a
+  degraded natural image;
+- every predicted clean image receives one gradient-based multicoil SENSE
+  consistency update using measured k-space, the mask, and supplied maps;
+- training uses complex-image L1, magnitude L1, and acquired-k-space residual
+  losses with weights `1.0/0.1/0.1`; and
+- raw HDF5 slices are loaded lazily and trained in BF16 with complex64 physics.
 
-`python -m mri_model.cli.evaluate_slice` loads the architecture configuration from a checkpoint, runs
-one selected train/validation/test slice, reports NMSE, PSNR, SSIM and measurement
-residual, and saves a four-panel comparison PNG.
+The controlled cohort contains 148 volumes with supplied maps, split by volume
+into 120/14/14 train/validation/test volumes (1,898/220/218 slices). Separate
+models were trained for 2x, 4x, 6x, and 8x deterministic Cartesian masks for 50
+data passes. Checkpoints are selected by volume-averaged validation PSNR before
+one held-out test evaluation.
+
+Report this method as **physics-guided MRI RDBM**, not as the unchanged RGB
+model. Its MRI consistency operation is a gradient update, not a CG-SENSE solve.
