@@ -1,6 +1,6 @@
 # Multicoil MRI Reconstruction: Project Status and Roadmap
 
-**Last updated:** October 24, 2026
+**Last updated:** October 25, 2026
 **Compute:** NVIDIA RTX 6000 Ada Generation, PyTorch/CUDA
 **Primary study:** Retrospective multicoil brain MRI reconstruction at 2x, 4x,
 6x, and 8x acceleration
@@ -280,6 +280,28 @@ published SwinMR forward model. The planned 4x run uses 96x96 training crops and
 50 matched dataset passes. The real-data CUDA smoke and overfit gates passed;
 full training has not started.
 
+### AdaDiff adaptive diffusion prior
+
+[`mri_adadiff/`](mri_adadiff/) ports the official AdaDiff implementation pinned
+at commit `15f9e1a04c13678d7c3c60ca4a47cf7b12482b24`. It preserves the
+two-channel NCSN++ generator, latent adaptive group normalization,
+time-conditional discriminator, released variance-scaling initialization,
+lazy R1 regularization, EMA, eight-step adversarial diffusion, hard multicoil
+consistency, and per-slice acquired k-space adaptation.
+
+AdaDiff trains one unconditional image prior without masks, sensitivity maps,
+or undersampled inputs. The same checkpoint is therefore evaluated at 2x, 4x,
+6x, and 8x. Necessary adaptations are the shared lazy HDF5 loader, supplied
+maps and tested MRI operator, 320x320 resolution with 20x20 attention, and
+an exact fused Triton implementation of the native FIR resampling math. The
+Triton path and the pinned official CUDA operator agree with the literal
+reference through forward, backward, and R1-required double backward. The
+released multicoil code's zero-filled rapid-diffusion initialization is the
+default; the paper-described Gaussian initialization is available only as an
+explicit ablation. Synthetic diffusion, gradient, checkpoint, consistency,
+adaptation, aggregation, and full-architecture real-data CUDA gates pass. Full
+training remains to be run.
+
 ## Validation and reporting protocol
 
 Every completed model follows the same evaluation rules:
@@ -297,7 +319,7 @@ Every completed model follows the same evaluation rules:
 The project contains automated tests for complex transforms, masks, sensitivity
 maps, forward/adjoint physics, data consistency, datasets, models, gradients,
 checkpoint restoration, and metric aggregation. The latest full CPU suite passed
-all **85 tests**.
+all **104 tests** (including the CUDA-only Triton double-backward gate).
 
 ## Full model and acceleration roadmap
 
@@ -318,7 +340,7 @@ The intended end state is a controlled evaluation at all four acceleration rates
 | SSDU | Planned | Planned | Planned | Planned | Official baseline not implemented yet |
 | Noise2Recon/meddlr | Planned | Planned | Planned | Planned | Not implemented yet |
 | RARE | Planned | Planned | Planned | Planned | Not implemented yet |
-| AdaDiff | Planned | Planned | Planned | Planned | Not implemented yet |
+| AdaDiff | Ready | Ready | Ready | Ready | One shared prior; CUDA gates complete, training pending |
 | Score-MRI | Planned | Planned | Planned | Planned | Not implemented yet |
 
 ### Published baseline references
@@ -368,7 +390,7 @@ bash scripts/evaluate_best_variational_network_test.sh
 
 ### Remaining baseline implementation
 
-For ReconFormer, SSDU, Noise2Recon, RARE, AdaDiff, and Score-MRI:
+For ReconFormer, SSDU, Noise2Recon, RARE, and Score-MRI:
 
 1. Pin and document the official repository commit.
 2. Reproduce the official architecture and optimizer before adding project-specific

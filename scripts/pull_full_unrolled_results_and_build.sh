@@ -34,11 +34,14 @@ echo "Opening SSH connection to $remote_host (enter its password when prompted).
 ssh -o ControlMaster=yes -o ControlPath="$control_socket" -o ControlPersist=600 \
   -o StrictHostKeyChecking=accept-new -Nf "$remote_host"
 
-echo "Checking remote test summaries and generating progression figures."
+echo "Checking remote test summaries and generating progression figures for: $rates."
 ssh -o ControlPath="$control_socket" "$remote_host" \
-  bash -s -- "$remote_repo" "$remote_data_root" "$remote_output_root" "$rates" <<'REMOTE'
+  bash -s -- "$remote_repo" "$remote_data_root" "$remote_output_root" \
+  "${requested_rates[@]}" <<'REMOTE'
 set -euo pipefail
-repo="$1"; data_root="$2"; output_root="$3"; rates="$4"
+repo="$1"; data_root="$2"; output_root="$3"
+shift 3
+rates="$*"
 for rate in $rates; do
   selection="$output_root/full_diffusion_unrolled_rdbm_${rate}x_scratch/evaluation/best_validation_checkpoint.json"
   if [[ ! -f "$selection" ]]; then echo "Missing selection: $selection" >&2; exit 1; fi

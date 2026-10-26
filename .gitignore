@@ -9,6 +9,7 @@ phase1/phase1_validation.log
 /third_party/mri-variationalnetwork/
 /third_party/Deep-MRI-Reconstruction/
 /third_party/SwinMR/
+/third_party/AdaDiff/
 .vscode/
 /Advancing MRI Reconstruction.pdf
 /images/

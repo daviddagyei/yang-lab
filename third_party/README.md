@@ -30,3 +30,12 @@ git clone https://github.com/js3611/Deep-MRI-Reconstruction.git \
 git -C third_party/Deep-MRI-Reconstruction checkout \
   d8a40efd892e57799c3413630e5cb92d5b035cf8
 ```
+
+`AdaDiff/` optionally supplies the official fused StyleGAN `upfirdn2d` CUDA
+source used to cross-check the production Triton backend. It is pinned to:
+
+`15f9e1a04c13678d7c3c60ca4a47cf7b12482b24`
+
+The directory is intentionally ignored by Git. Clone that commit when testing
+`ADADIFF_FIR_BACKEND=official`; routine training uses the compiler-free Triton
+backend bundled with the PyTorch CUDA installation.

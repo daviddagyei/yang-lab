@@ -27,7 +27,15 @@ from mri_reconstruction import (
     forward_operator,
     measurement_residual,
 )
-from mri_adadiff.model import DownsampleConv2d, ddpm_conv, downsample, upsample
+from mri_adadiff.model import (
+    DownsampleConv2d,
+    ddpm_conv,
+    downsample,
+    upfirdn2d_native,
+    upfirdn2d_optimized,
+    minibatch_standard_deviation,
+    upsample,
+)
 from mri_adadiff.spatial import center_pad_to_size, remove_center_padding
 
 
@@ -129,6 +137,71 @@ class AdaDiffTests(unittest.TestCase):
             expected_filtered, fused.weight.detach(), fused.bias.detach(), stride=2
         )
         torch.testing.assert_close(fused(value.detach()), expected_fused)
+
+    def test_optimized_fir_matches_reference_values_and_gradients(self) -> None:
+        for up, down, pad in ((2, 1, (2, 1)), (1, 2, (1, 1)), (1, 1, (2, 2))):
+            torch.manual_seed(17 + up + down)
+            reference_input = torch.randn(2, 3, 7, 7, dtype=torch.float64, requires_grad=True)
+            optimized_input = reference_input.detach().clone().requires_grad_(True)
+            kernel = torch.arange(1.0, 17.0, dtype=torch.float64).reshape(4, 4)
+            reference = upfirdn2d_native(
+                reference_input, kernel, up=up, down=down, pad=pad
+            )
+            optimized = upfirdn2d_optimized(
+                optimized_input, kernel, up=up, down=down, pad=pad
+            )
+            torch.testing.assert_close(optimized, reference, rtol=1e-12, atol=1e-12)
+            probe = torch.randn_like(reference)
+            reference_gradient = torch.autograd.grad((reference * probe).sum(), reference_input)[0]
+            optimized_gradient = torch.autograd.grad((optimized * probe).sum(), optimized_input)[0]
+            torch.testing.assert_close(
+                optimized_gradient, reference_gradient, rtol=1e-12, atol=1e-12
+            )
+
+    def test_minibatch_standard_deviation_matches_official_grouping(self) -> None:
+        torch.manual_seed(29)
+        value = torch.randn(8, 6, 3, 3)
+        expected = value.view(4, -1, 1, 6, 3, 3)
+        expected = torch.sqrt(expected.var(dim=0, unbiased=False) + 1e-8)
+        expected = expected.mean(dim=(2, 3, 4), keepdim=True).squeeze(2)
+        expected = expected.repeat(4, 1, 3, 3)
+        torch.testing.assert_close(minibatch_standard_deviation(value), expected)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for Triton FIR")
+    def test_triton_fir_matches_reference_through_double_backward(self) -> None:
+        from mri_adadiff.triton_upfirdn import triton_upfirdn2d
+
+        for up, down, pad in ((2, 1, (2, 1)), (1, 2, (1, 1)), (1, 1, (2, 2))):
+            torch.manual_seed(41 + up + down)
+            reference_input = torch.randn(
+                2, 3, 8, 8, device="cuda", dtype=torch.float32, requires_grad=True
+            )
+            triton_input = reference_input.detach().clone().requires_grad_(True)
+            vector = torch.tensor([1.0, 3.0, 3.0, 1.0], device="cuda")
+            kernel = torch.outer(vector, vector) / vector.sum().square()
+            reference = upfirdn2d_native(
+                reference_input, kernel, up=up, down=down, pad=pad
+            )
+            actual = triton_upfirdn2d(triton_input, kernel, up=up, down=down, pad=pad)
+            torch.testing.assert_close(actual, reference, rtol=2e-5, atol=2e-6)
+            reference_gradient = torch.autograd.grad(
+                reference.square().sum(), reference_input, create_graph=True
+            )[0]
+            actual_gradient = torch.autograd.grad(
+                actual.square().sum(), triton_input, create_graph=True
+            )[0]
+            torch.testing.assert_close(
+                actual_gradient, reference_gradient, rtol=3e-5, atol=3e-6
+            )
+            reference_second = torch.autograd.grad(
+                reference_gradient.square().sum(), reference_input
+            )[0]
+            actual_second = torch.autograd.grad(
+                actual_gradient.square().sum(), triton_input
+            )[0]
+            torch.testing.assert_close(
+                actual_second, reference_second, rtol=5e-5, atol=5e-6
+            )
 
     def test_ddpm_initialization_matches_official_variance_scaling(self) -> None:
         torch.manual_seed(91)

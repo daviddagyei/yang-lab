@@ -97,7 +97,18 @@ class MoDLTests(unittest.TestCase):
             unrolls=1,
             cg_iterations=2,
         )
-        trainer = MoDLTrainer(warmup, learning_rate=1e-3, device="cpu")
+        data_config = {
+            "acceleration": 6,
+            "center_fraction": 0.05333333333333334,
+            "mask_seed": 20261019,
+            "normalization_quantile": 0.99,
+        }
+        trainer = MoDLTrainer(
+            warmup,
+            learning_rate=1e-3,
+            device="cpu",
+            data_config=data_config,
+        )
         trainer.train_step(batch)
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = trainer.save(Path(directory) / "checkpoint.pt")
@@ -107,9 +118,15 @@ class MoDLTests(unittest.TestCase):
                 unrolls=3,
                 cg_iterations=2,
             )
-            resumed = MoDLTrainer(expanded, learning_rate=1e-3, device="cpu")
+            resumed = MoDLTrainer(
+                expanded,
+                learning_rate=1e-3,
+                device="cpu",
+                data_config=data_config,
+            )
             resumed.load(checkpoint, allow_unroll_change=True)
             self.assertEqual(resumed.step, 1)
+            self.assertEqual(resumed.data_config, data_config)
             for expected, actual in zip(trainer.model.parameters(), resumed.model.parameters()):
                 torch.testing.assert_close(expected, actual)
 

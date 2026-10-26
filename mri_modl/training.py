@@ -37,6 +37,7 @@ class MoDLTrainer:
         learning_rate: float = 1e-3,
         device: str | torch.device | None = None,
         gradient_clip_value: float = 1.0,
+        data_config: Mapping[str, Any] | None = None,
     ) -> None:
         if learning_rate <= 0 or gradient_clip_value <= 0:
             raise ValueError("learning_rate and gradient_clip_value must be positive")
@@ -44,6 +45,7 @@ class MoDLTrainer:
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         self.gradient_clip_value = gradient_clip_value
+        self.data_config = dict(data_config or {})
         self.step = 0
 
     def train_step(self, batch: Mapping[str, Any]) -> dict[str, float]:
@@ -82,6 +84,7 @@ class MoDLTrainer:
                 "model_name": "modl",
                 "step": self.step,
                 "model_config": self.model.model_config,
+                "data_config": self.data_config,
                 "model": self.model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
             },
@@ -102,6 +105,15 @@ class MoDLTrainer:
             raise ValueError(
                 f"checkpoint model configuration differs: saved={saved_config}, current={current_config}"
             )
+        saved_data_config = checkpoint.get("data_config")
+        if saved_data_config is not None:
+            saved_data_config = dict(saved_data_config)
+            if self.data_config and saved_data_config != self.data_config:
+                raise ValueError(
+                    "checkpoint data configuration differs: "
+                    f"saved={saved_data_config}, current={self.data_config}"
+                )
+            self.data_config = saved_data_config
         self.model.load_state_dict(checkpoint["model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.step = int(checkpoint["step"])

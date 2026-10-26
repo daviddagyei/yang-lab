@@ -22,6 +22,7 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=PROJECT_ROOT / "phase1/manifests/train.jsonl")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--acceleration", type=int, choices=(2, 4, 6, 8), default=4)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -54,7 +55,7 @@ def main() -> None:
         split="train",
         normalization_quantile=0.99,
         mask_seed=args.mask_seed,
-        acceleration=4,
+        acceleration=args.acceleration,
     )
     dataset: torch.utils.data.Dataset = base_dataset
     if args.max_samples is not None:
@@ -62,7 +63,7 @@ def main() -> None:
             raise ValueError("max-samples must be within the dataset")
         dataset = Subset(base_dataset, range(args.max_samples))
     data_config = {
-        "acceleration": 4,
+        "acceleration": args.acceleration,
         "center_fraction": base_dataset.mask_config.resolved_center_fraction,
         "mask_seed": args.mask_seed,
         "normalization_quantile": 0.99,
@@ -94,7 +95,8 @@ def main() -> None:
         grouped_batch_schedule(dataset, batch_size=args.batch_size, seed=args.seed)
     )
     print(
-        f"device={torch.cuda.get_device_name(0)} precision=fp32 slices={len(dataset)} "
+        f"device={torch.cuda.get_device_name(0)} precision=fp32 "
+        f"acceleration={args.acceleration}x slices={len(dataset)} "
         f"batch_size={args.batch_size} batches_per_epoch={batches_per_epoch} "
         f"epochs={args.epochs} cascades={model.cascades} depth={model.depth} "
         f"features={model.features} cg_iterations={model.cg_iterations} "

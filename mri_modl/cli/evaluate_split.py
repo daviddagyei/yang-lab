@@ -22,6 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--data-root", type=Path)
     parser.add_argument("--split", choices=("val", "test"), default="val")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -53,13 +54,32 @@ def main() -> None:
     if checkpoint.get("model_name") != "modl":
         raise ValueError("checkpoint is not a MoDL checkpoint")
     step = int(checkpoint["step"])
+    data_config = dict(
+        checkpoint.get(
+            "data_config",
+            {
+                "acceleration": 4,
+                "center_fraction": 0.08,
+                "mask_seed": 20261019,
+                "normalization_quantile": 0.99,
+            },
+        )
+    )
     model = build_modl(**checkpoint["model_config"])
     model.load_state_dict(checkpoint["model"])
     del checkpoint
     model = model.to(device).eval()
 
     manifest = PROJECT_ROOT / "phase1" / "manifests" / f"{args.split}.jsonl"
-    dataset = MRISliceDataset(manifest, split=args.split)
+    dataset = MRISliceDataset(
+        manifest,
+        split=args.split,
+        data_root=args.data_root,
+        acceleration=int(data_config["acceleration"]),
+        center_fraction=float(data_config["center_fraction"]),
+        mask_seed=int(data_config["mask_seed"]),
+        normalization_quantile=float(data_config["normalization_quantile"]),
+    )
     expected_samples = len(dataset)
     if args.max_samples is not None:
         if not 0 < args.max_samples <= len(dataset):
@@ -78,7 +98,8 @@ def main() -> None:
     rows = read_rows(rows_path, step=step, split=args.split)
     completed = {str(row["sample_id"]) for row in rows}
     print(
-        f"checkpoint={step} split={args.split} device={device} "
+        f"checkpoint={step} split={args.split} acceleration={data_config['acceleration']}x "
+        f"device={device} "
         f"completed={len(completed)}/{expected_samples}",
         flush=True,
     )
@@ -168,6 +189,7 @@ def main() -> None:
         "checkpoint": str(args.checkpoint.resolve()),
         "checkpoint_step": step,
         "split": args.split,
+        "acceleration": int(data_config["acceleration"]),
         "precision": "fp32",
         "unrolls": model.unrolls,
         "cg_iterations": model.cg_iterations,

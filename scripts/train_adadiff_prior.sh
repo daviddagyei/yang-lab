@@ -4,6 +4,8 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 source .venv/bin/activate
+export ADADIFF_FIR_BACKEND="${ADADIFF_FIR_BACKEND:-triton}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 data_root="${MRI_DATA_ROOT:-/data/david_agyei/nyu-dataset}"
 output_root="${ADADIFF_OUTPUT_ROOT:-$data_root/derived}"
@@ -21,6 +23,7 @@ python -u -m mri_adadiff.cli.train \
   --epochs 500 \
   --batch-size "${ADADIFF_BATCH_SIZE:-4}" \
   --num-workers "${ADADIFF_NUM_WORKERS:-4}" \
+  --lazy-regularization "${ADADIFF_LAZY_REGULARIZATION:-10}" \
   --save-every-epochs 25 \
   "${resume_args[@]}" \
   2>&1 | tee -a "$output_dir/train.log"

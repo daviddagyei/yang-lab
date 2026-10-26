@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel
 
 from .diffusion import DiffusionSchedule
 from .model import (
@@ -57,6 +59,25 @@ class AdaDiffTrainer:
         self.discriminator = discriminator.to(self.device)
         self.ema_generator = copy.deepcopy(generator).to(self.device).eval()
         self.ema_generator.requires_grad_(False)
+        self.distributed = dist.is_available() and dist.is_initialized()
+        if self.distributed:
+            if self.device.type != "cuda" or self.device.index is None:
+                raise ValueError("distributed AdaDiff training requires an indexed CUDA device")
+            self.generator_forward: torch.nn.Module = DistributedDataParallel(
+                self.generator,
+                device_ids=[self.device.index],
+                output_device=self.device.index,
+                broadcast_buffers=False,
+            )
+            self.discriminator_forward: torch.nn.Module = DistributedDataParallel(
+                self.discriminator,
+                device_ids=[self.device.index],
+                output_device=self.device.index,
+                broadcast_buffers=False,
+            )
+        else:
+            self.generator_forward = self.generator
+            self.discriminator_forward = self.discriminator
         self.schedule = schedule or DiffusionSchedule()
         self.generator_optimizer = torch.optim.Adam(
             self.generator.parameters(),
@@ -118,8 +139,6 @@ class AdaDiffTrainer:
         )
         real_state, condition = self.schedule.sample_pair(image, timesteps)
         real_state.requires_grad_(self.step % self.lazy_regularization == 0)
-        real_logits = self.discriminator(real_state, timesteps, condition.detach())
-        discriminator_real = F.softplus(-real_logits).mean()
         latent = torch.randn(
             batch_size, self.generator.latent_dimension, device=self.device
         )
@@ -128,7 +147,16 @@ class AdaDiffTrainer:
             fake_state = self.schedule.sample_posterior(
                 predicted_clean, condition, timesteps
             )
-        fake_logits = self.discriminator(fake_state.detach(), timesteps, condition.detach())
+        paired_logits = self.discriminator_forward(
+            real_state,
+            timesteps,
+            condition.detach(),
+            fake_state.detach(),
+        )
+        if not isinstance(paired_logits, tuple):
+            raise RuntimeError("paired discriminator forward did not return two logits")
+        real_logits, fake_logits = paired_logits
+        discriminator_real = F.softplus(-real_logits).mean()
         discriminator_fake = F.softplus(fake_logits).mean()
         r1 = torch.zeros((), device=self.device)
         if self.step % self.lazy_regularization == 0:
@@ -155,7 +183,7 @@ class AdaDiffTrainer:
         latent = torch.randn(
             batch_size, self.generator.latent_dimension, device=self.device
         )
-        predicted_clean = self.generator(condition.detach(), timesteps, latent)
+        predicted_clean = self.generator_forward(condition.detach(), timesteps, latent)
         fake_state = self.schedule.sample_posterior(
             predicted_clean, condition, timesteps
         )

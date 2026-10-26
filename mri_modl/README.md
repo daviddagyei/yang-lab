@@ -17,3 +17,15 @@ Deep Learning Architecture for Inverse Problems*, IEEE TMI 38(2), 394-405,
 https://doi.org/10.1109/TMI.2018.2865356.
 
 Authors' implementation: https://github.com/hkaggarwal/modl
+
+Each acceleration rate is trained as a separate model. To train the remaining
+2x, 6x, and 8x models sequentially on one GPU, run:
+
+```bash
+bash scripts/train_modl_remaining_rates.sh
+```
+
+The default schedule uses the same 50-pass exposure as the completed 4x model:
+five passes with one shared unroll as a memory-safe warm-up, followed by the
+ten-unroll model through 94,900 total updates. Checkpoints store the sampling
+configuration so evaluation automatically reconstructs with the correct rate.

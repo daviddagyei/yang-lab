@@ -1,4 +1,4 @@
-"""Train the 4x multicoil MoDL baseline on the supplied-map subset."""
+"""Train a multicoil MoDL baseline on the supplied-map subset."""
 
 from __future__ import annotations
 
@@ -32,6 +32,10 @@ def parse_arguments() -> argparse.Namespace:
         default=PROJECT_ROOT / "phase1" / "manifests" / "train.jsonl",
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--acceleration", type=int, choices=(2, 4, 6, 8), default=4)
+    parser.add_argument("--center-fraction", type=float)
+    parser.add_argument("--normalization-quantile", type=float, default=0.99)
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--save-every", type=int, default=1898)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -63,7 +67,21 @@ def main() -> None:
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
-    dataset = MRISliceDataset(args.manifest, split="train", mask_seed=args.mask_seed)
+    dataset = MRISliceDataset(
+        args.manifest,
+        split="train",
+        data_root=args.data_root,
+        acceleration=args.acceleration,
+        center_fraction=args.center_fraction,
+        mask_seed=args.mask_seed,
+        normalization_quantile=args.normalization_quantile,
+    )
+    data_config = {
+        "acceleration": args.acceleration,
+        "center_fraction": dataset.mask_config.resolved_center_fraction,
+        "mask_seed": args.mask_seed,
+        "normalization_quantile": args.normalization_quantile,
+    }
     if args.max_samples is not None:
         if not 0 < args.max_samples <= len(dataset):
             raise ValueError("max-samples must be between 1 and the dataset size")
@@ -80,7 +98,12 @@ def main() -> None:
         unrolls=args.unrolls,
         cg_iterations=args.cg_iterations,
     )
-    trainer = MoDLTrainer(model, learning_rate=args.learning_rate, device="cuda")
+    trainer = MoDLTrainer(
+        model,
+        learning_rate=args.learning_rate,
+        device="cuda",
+        data_config=data_config,
+    )
     if args.resume:
         trainer.load(args.resume, allow_unroll_change=args.allow_unroll_change)
 
@@ -88,7 +111,8 @@ def main() -> None:
     batches = repeat_loader(loader)
     final_step = trainer.step + args.steps
     print(
-        f"device={trainer.device} start_step={trainer.step} final_step={final_step} "
+        f"device={trainer.device} acceleration={args.acceleration}x "
+        f"start_step={trainer.step} final_step={final_step} "
         f"unrolls={args.unrolls} cg_iterations={args.cg_iterations}",
         flush=True,
     )

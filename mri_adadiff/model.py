@@ -1,13 +1,14 @@
 """Pure-PyTorch port of the official AdaDiff adversarial diffusion networks.
 
-The topology and conditioning follow icon-lab/AdaDiff. The repository's custom
-StyleGAN CUDA kernel is replaced by an exact, differentiable transcription of
-its native ``upfirdn2d`` reference math for current PyTorch/CUDA compatibility.
+The topology and conditioning follow icon-lab/AdaDiff. FIR resampling supports
+fused Triton/official CUDA paths plus exact grouped-convolution and literal
+reference implementations for numerical checks.
 """
 
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Sequence
 
 import torch
@@ -33,6 +34,23 @@ def timestep_embedding(timesteps: torch.Tensor, dimension: int) -> torch.Tensor:
 
 def _groups(channels: int) -> int:
     return min(max(channels // 4, 1), 32)
+
+
+def minibatch_standard_deviation(
+    value: torch.Tensor, *, maximum_group_size: int = 4
+) -> torch.Tensor:
+    """Return the released discriminator's local grouped stddev channel."""
+
+    if value.ndim != 4 or maximum_group_size <= 0:
+        raise ValueError("invalid minibatch-standard-deviation input")
+    batch, channels, height, width = value.shape
+    group = min(batch, maximum_group_size)
+    if batch % group:
+        raise ValueError("batch size must be divisible by its stddev group")
+    deviation = value.view(group, -1, 1, channels, height, width)
+    deviation = torch.sqrt(deviation.var(dim=0, unbiased=False) + 1e-8)
+    deviation = deviation.mean(dim=(2, 3, 4), keepdim=True).squeeze(2)
+    return deviation.repeat(group, 1, height, width)
 
 
 def _fan_average(shape: torch.Size | tuple[int, ...]) -> float:
@@ -190,10 +208,106 @@ def upfirdn2d_native(
     return output.reshape(batch, channels, output_height, output_width)
 
 
+def upfirdn2d_optimized(
+    value: torch.Tensor,
+    kernel: torch.Tensor,
+    *,
+    up: int = 1,
+    down: int = 1,
+    pad: tuple[int, int] = (0, 0),
+) -> torch.Tensor:
+    """Exact memory-efficient equivalent for the AdaDiff FIR use cases.
+
+    ``conv_transpose2d`` performs zero insertion and FIR filtering as one
+    operation, so its output is materialized without first allocating the
+    mostly-zero ``(H * up, W * up)`` tensor.  Filtering/downsampling is a
+    depthwise grouped convolution.  Unusual parameter combinations fall back
+    to :func:`upfirdn2d_native`, which is retained as the correctness oracle.
+    """
+
+    if value.ndim != 4 or kernel.ndim != 2 or up < 1 or down < 1:
+        raise ValueError("invalid upfirdn2d input")
+    if kernel.shape[0] != kernel.shape[1] or up > 1 and down > 1:
+        return upfirdn2d_native(value, kernel, up=up, down=down, pad=pad)
+
+    pad_before, pad_after = (int(item) for item in pad)
+    if pad_before < 0 or pad_after < 0:
+        return upfirdn2d_native(value, kernel, up=up, down=down, pad=pad)
+
+    channels = value.shape[1]
+    spatial = kernel.to(device=value.device, dtype=value.dtype)
+    if up > 1:
+        # For StyleGAN's insert-zeros -> asymmetric-pad -> correlation with a
+        # flipped FIR, transposed convolution uses the unflipped FIR directly.
+        convolution_padding = spatial.shape[0] - 1 - pad_before
+        output_padding = pad_after - pad_before + up - 1
+        if (
+            convolution_padding < 0
+            or output_padding < 0
+            or output_padding >= up
+            or down != 1
+        ):
+            return upfirdn2d_native(value, kernel, up=up, down=down, pad=pad)
+        weight = spatial.view(1, 1, *spatial.shape).repeat(channels, 1, 1, 1)
+        return F.conv_transpose2d(
+            value,
+            weight,
+            stride=up,
+            padding=convolution_padding,
+            output_padding=output_padding,
+            groups=channels,
+        )
+
+    padded = F.pad(value, (pad_before, pad_after, pad_before, pad_after))
+    flipped = torch.flip(spatial, (0, 1))
+    weight = flipped.view(1, 1, *flipped.shape).repeat(channels, 1, 1, 1)
+    return F.conv2d(padded, weight, stride=down, groups=channels)
+
+
+def fir_backend() -> str:
+    """Return the selected FIR backend.
+
+    The library-level default remains the portable ``optimized`` path so CPU
+    tests work; production shell scripts explicitly select ``triton``.
+    ``reference`` exists only for regression checks.
+    """
+
+    backend = os.environ.get("ADADIFF_FIR_BACKEND", "optimized").strip().lower()
+    if backend not in {"optimized", "official", "reference", "triton"}:
+        raise ValueError(
+            "ADADIFF_FIR_BACKEND must be 'official', 'optimized', 'triton', "
+            "or 'reference', "
+            f"got {backend!r}"
+        )
+    return backend
+
+
+def upfirdn2d(
+    value: torch.Tensor,
+    kernel: torch.Tensor,
+    *,
+    up: int = 1,
+    down: int = 1,
+    pad: tuple[int, int] = (0, 0),
+) -> torch.Tensor:
+    if fir_backend() == "official":
+        from .official_upfirdn import official_upfirdn2d
+
+        return official_upfirdn2d(value, kernel, up=up, down=down, pad=pad)
+    if fir_backend() == "triton":
+        from .triton_upfirdn import triton_upfirdn2d
+
+        return triton_upfirdn2d(value, kernel, up=up, down=down, pad=pad)
+    implementation = (
+        upfirdn2d_optimized if fir_backend() == "optimized" else upfirdn2d_native
+    )
+    return implementation(value, kernel, up=up, down=down, pad=pad)
+
+
 def upsample(value: torch.Tensor, kernel: Sequence[int | float]) -> torch.Tensor:
     spatial = _fir_kernel(kernel, value.device, value.dtype) * 4.0
     padding = spatial.shape[0] - 2
-    return upfirdn2d_native(
+    return upfirdn2d(
         value,
         spatial,
         up=2,
@@ -204,7 +318,7 @@ def upsample(value: torch.Tensor, kernel: Sequence[int | float]) -> torch.Tensor
 def downsample(value: torch.Tensor, kernel: Sequence[int | float]) -> torch.Tensor:
     spatial = _fir_kernel(kernel, value.device, value.dtype)
     padding = spatial.shape[0] - 2
-    return upfirdn2d_native(
+    return upfirdn2d(
         value,
         spatial,
         down=2,
@@ -235,7 +349,7 @@ class DownsampleConv2d(nn.Module):
     def forward(self, value: torch.Tensor) -> torch.Tensor:
         spatial = _fir_kernel(self.fir_kernel, value.device, value.dtype)
         padding = (spatial.shape[0] - 2) + (self.kernel_size - 1)
-        filtered = upfirdn2d_native(
+        filtered = upfirdn2d(
             value,
             spatial,
             pad=((padding + 1) // 2, padding // 2),
@@ -620,7 +734,7 @@ class AdaDiffDiscriminator(nn.Module):
             "depth": self.depth,
         }
 
-    def forward(
+    def _forward_single(
         self, candidate: torch.Tensor, timesteps: torch.Tensor, condition: torch.Tensor
     ) -> torch.Tensor:
         if candidate.shape != condition.shape:
@@ -631,12 +745,24 @@ class AdaDiffDiscriminator(nn.Module):
         hidden = self.input(torch.cat((candidate, condition), dim=1))
         for block in self.blocks:
             hidden = block(hidden, time)
-        deviation = torch.sqrt(hidden.var(dim=0, unbiased=False, keepdim=True) + 1e-8)
-        deviation = deviation.mean(dim=(1, 2, 3), keepdim=True).expand(
-            hidden.shape[0], 1, hidden.shape[2], hidden.shape[3]
-        )
+        # Match the released DDP code: groups of at most four are formed from
+        # the process-local batch, without cross-GPU synchronization.
+        deviation = minibatch_standard_deviation(hidden)
         hidden = F.leaky_relu(self.final(torch.cat((hidden, deviation), dim=1)), 0.2)
         return self.classifier(hidden.sum(dim=(2, 3))).flatten()
+
+    def forward(
+        self,
+        candidate: torch.Tensor,
+        timesteps: torch.Tensor,
+        condition: torch.Tensor,
+        second_candidate: torch.Tensor | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        first = self._forward_single(candidate, timesteps, condition)
+        if second_candidate is None:
+            return first
+        second = self._forward_single(second_candidate, timesteps, condition)
+        return first, second
 
 
 def build_adadiff_generator(**kwargs: object) -> AdaDiffGenerator:

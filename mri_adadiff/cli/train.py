@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import random
+import time
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,7 @@ from mri_adadiff import (
     grouped_prior_batch_schedule,
     prior_collate,
 )
+from mri_adadiff.model import fir_backend
 from mri_data import MRISliceDataset
 
 
@@ -37,8 +39,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--save-every-epochs", type=int, default=25)
     parser.add_argument("--log-every", type=int, default=10)
+    parser.add_argument("--lazy-regularization", type=int, default=10)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--max-steps", type=int)
+    parser.add_argument("--benchmark-warmup-steps", type=int, default=0)
+    parser.add_argument("--skip-max-step-checkpoint", action="store_true")
     parser.add_argument("--seed", type=int, default=1024)
     return parser.parse_args()
 
@@ -47,8 +52,21 @@ def main() -> None:
     args = parse_arguments()
     if not torch.cuda.is_available():
         raise RuntimeError("full AdaDiff training requires CUDA")
-    if args.epochs <= 0 or args.batch_size <= 0 or args.save_every_epochs <= 0:
+    if fir_backend() == "reference" and args.max_steps is None:
+        raise RuntimeError(
+            "reference FIR backend is prohibited for full training; "
+            "use ADADIFF_FIR_BACKEND=triton or optimized"
+        )
+    if (
+        args.epochs <= 0
+        or args.batch_size <= 0
+        or args.save_every_epochs <= 0
+        or args.lazy_regularization <= 0
+        or args.benchmark_warmup_steps < 0
+    ):
         raise ValueError("invalid training duration or batch settings")
+    if args.benchmark_warmup_steps and args.max_steps is None:
+        raise ValueError("benchmark warm-up requires --max-steps")
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     distributed = world_size > 1
     if distributed:
@@ -69,6 +87,8 @@ def main() -> None:
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision("high")
     device = torch.device("cuda", local_rank)
 
     # Acceleration is used only inside the shared loader before target-only
@@ -113,6 +133,7 @@ def main() -> None:
         discriminator,
         schedule=schedule,
         total_epochs=args.epochs,
+        lazy_regularization=args.lazy_regularization,
         data_config={
             "train_volumes": source.volume_count,
             "train_slices": len(source),
@@ -120,6 +141,10 @@ def main() -> None:
             "operator_independent": True,
             "model_image_size": 320,
             "spatial_adapter": "center_zero_pad_then_crop",
+            "global_batch_size": args.batch_size,
+            "world_size": world_size,
+            "fir_backend": fir_backend(),
+            "lazy_regularization": args.lazy_regularization,
         },
         device=device,
     )
@@ -138,14 +163,24 @@ def main() -> None:
             f"global_batch_size={args.batch_size} local_batch_size={local_batch_size} "
             f"world_size={world_size} epochs={args.epochs} steps_per_epoch={steps_per_epoch} "
             f"start_epoch={trainer.completed_epochs} start_step={trainer.step} "
-            "architecture=official_AdaDiff_NCSNpp timesteps=8 precision=fp32",
+            "architecture=official_AdaDiff_NCSNpp timesteps=8 precision=fp32 "
+            f"fir_backend={fir_backend()} lazy_regularization={args.lazy_regularization}",
             flush=True,
         )
+    torch.cuda.synchronize(device)
+    benchmark_initial_step = trainer.step
+    benchmark_measurement_step = benchmark_initial_step + args.benchmark_warmup_steps
+    benchmark_started = (
+        time.perf_counter() if args.benchmark_warmup_steps == 0 else None
+    )
     stop = False
     for epoch in range(trainer.completed_epochs, args.epochs):
         loader = build_epoch_loader(epoch)
         for epoch_step, batch in enumerate(loader, start=1):
             metrics = trainer.train_step(batch)
+            if benchmark_started is None and trainer.step >= benchmark_measurement_step:
+                torch.cuda.synchronize(device)
+                benchmark_started = time.perf_counter()
             if distributed:
                 metric_names = tuple(metrics)
                 metric_values = torch.tensor(
@@ -171,8 +206,26 @@ def main() -> None:
                 stop = True
                 break
         if stop:
+            torch.cuda.synchronize(device)
+            measured_updates = trainer.step - benchmark_measurement_step
+            if benchmark_started is None:
+                raise ValueError("--max-steps must exceed benchmark warm-up steps")
+            elapsed = time.perf_counter() - benchmark_started
+            if rank == 0 and measured_updates > 0:
+                mean_update_seconds = elapsed / measured_updates
+                projected_hours = (
+                    mean_update_seconds * steps_per_epoch * args.epochs / 3600.0
+                )
+                print(
+                    f"benchmark_updates={measured_updates} "
+                    f"elapsed_seconds={elapsed:.2f} "
+                    f"mean_update_seconds={mean_update_seconds:.2f} "
+                    f"projected_{args.epochs}_epoch_hours={projected_hours:.2f} "
+                    f"projected_{args.epochs}_epoch_days={projected_hours / 24.0:.2f}",
+                    flush=True,
+                )
             checkpoint = args.output_dir / f"checkpoint-epoch-{epoch + 1:04d}-step-{trainer.step:07d}.pt"
-            if rank == 0:
+            if rank == 0 and not args.skip_max_step_checkpoint:
                 trainer.save(checkpoint)
                 print(f"stopped_at_max_steps checkpoint={checkpoint}", flush=True)
             if distributed:

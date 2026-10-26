@@ -62,16 +62,20 @@ def artifacts(rate):
     selection=read_json(evaluation/'best_validation_checkpoint.json')
     test_dir=evaluation/'test'/f"step-{{selection['checkpoint_step']:07d}}"
     return run,selection,test_dir,read_json(test_dir/'summary.json')
-def show_table(rows,columns,precision=4,bold_best=None):
+def show_table(rows,columns,precision=4,bold_best=None,group_by=None):
     bold_best=bold_best or {{}}; best={{}}
-    for key,direction in bold_best.items():
-        values=[row[key] for row in rows if isinstance(row[key],(int,float)) and np.isfinite(row[key])]
-        best[key]=(max if direction=='max' else min)(values)
+    groups={{row.get(group_by) if group_by else None for row in rows}}
+    for group in groups:
+        grouped=[row for row in rows if (row.get(group_by) if group_by else None)==group]
+        for key,direction in bold_best.items():
+            values=[row[key] for row in grouped if isinstance(row[key],(int,float)) and np.isfinite(row[key])]
+            if values: best[(group,key)]=(max if direction=='max' else min)(values)
     def render(value): return f'{{value:.{{precision}}f}}' if isinstance(value,float) else escape(str(value))
     header=''.join(f'<th style="text-align:left;padding:4px 10px">{{escape(label)}}</th>' for key,label in columns)
     def cell(row,key):
         value=render(row[key])
-        if key in best and np.isclose(row[key],best[key]): value=f'<strong>{{value}}</strong>'
+        group=row.get(group_by) if group_by else None
+        if (group,key) in best and np.isclose(row[key],best[(group,key)]): value=f'<strong>{{value}}</strong>'
         return f'<td style="padding:4px 10px">{{value}}</td>'
     body=''.join('<tr>'+''.join(cell(row,key) for key,label in columns)+'</tr>' for row in rows)
     display(HTML(f'<table><thead><tr>{{header}}</tr></thead><tbody>{{body}}</tbody></table>'))
@@ -92,7 +96,7 @@ for axis,rate in zip(axes[0],RATES):
     axis.plot([x['completed_epochs'] for x in candidates],[x[METHOD]['psnr'] for x in candidates],marker='o')
     axis.axvline(selection['completed_epochs'],color='tab:green',linestyle='--')
     axis.set(xlabel='Epoch',ylabel='Validation PSNR (dB)',title=f'{rate}×')
-show_table(rows,[(key,key) for key in rows[0]])
+show_table(rows,[(key,key) for key in rows[0]],bold_best={'PSNR':'max','SSIM':'max','NMSE':'min'})
 plt.tight_layout(); plt.show()
 """
         ),
@@ -106,7 +110,10 @@ for rate in RATES:
                  'PSNR gain':result['psnr']-zf['psnr'],'ZF SSIM':zf['ssim'],
                  'Full unrolled SSIM':result['ssim'],'Complex NMSE':result['nmse'],
                  'Residual':result['measurement_residual'],'Seconds/slice':result['seconds_per_slice']})
-show_table(rows,[(key,key) for key in rows[0]])
+show_table(rows,[(key,key) for key in rows[0]],bold_best={
+    'ZF PSNR':'max','Full unrolled PSNR':'max','PSNR gain':'max',
+    'ZF SSIM':'max','Full unrolled SSIM':'max','Complex NMSE':'min',
+    'Residual':'min','Seconds/slice':'min'})
 """
         ),
         md(
@@ -155,7 +162,9 @@ else:
             rows.append({'Rate':f'{rate}×','Output':label,'PSNR':result['psnr'],'SSIM':result['ssim'],
                          'NMSE':result['nmse'],'Residual':result['measurement_residual'],
                          'Seconds/slice':result['seconds_per_slice']})
-    show_table(rows,[(key,key) for key in rows[0]])
+    show_table(rows,[(key,key) for key in rows[0]],
+               bold_best={'PSNR':'max','SSIM':'max','NMSE':'min','Residual':'min','Seconds/slice':'min'},
+               group_by='Rate')
 """
         ),
         md(
@@ -184,29 +193,54 @@ if 4 in RATES:
         rows=[{'Output':label,'PSNR':result['psnr'],'SSIM':result['ssim'],
                'NMSE':result['nmse'],'Residual':result['measurement_residual'],
                'Seconds/slice':result['seconds_per_slice']} for label,result in candidates]
-        show_table(rows,[(key,key) for key in rows[0]])
+        show_table(rows,[(key,key) for key in rows[0]],
+                   bold_best={'PSNR':'max','SSIM':'max','NMSE':'min','Residual':'min','Seconds/slice':'min'})
 """
         ),
-        md("## Comparison with existing RDBM variants"),
+        md(
+            """
+## Comparison with existing RDBM variants
+
+The validation-selected early-exit result is included as a distinct operating
+point; Stage 10 remains visible as the full-trajectory reference.
+"""
+        ),
         code(
             """
 comparison=[]
+metric_keys=('psnr','ssim','nmse','measurement_residual','seconds_per_slice')
 for rate in RATES:
     full=runs[rate][3][METHOD]
     rdbm_path=(DATA_ROOT/'derived'/('rdbm_full_bf16' if rate==4 else f'rdbm_{rate}x_bf16')/'evaluation/test/step-0094900/summary.json')
     if rdbm_path.exists():
         base=read_json(rdbm_path)['rdbm']
-        comparison.append({'Rate':f'{rate}×','Model':'Original RDBM',**{k:base[k] for k in ('psnr','ssim','nmse','measurement_residual')}})
-    comparison.append({'Rate':f'{rate}×','Model':'Full diffusion-unrolled',**{k:full[k] for k in ('psnr','ssim','nmse','measurement_residual')}})
+        comparison.append({'Rate':f'{rate}×','Model':'Original RDBM',**{k:base[k] for k in metric_keys}})
+    comparison.append({'Rate':f'{rate}×','Model':'Full unrolled (Stage 10)',**{k:full[k] for k in metric_keys}})
+    if rate in early:
+        early_selection,early_test=early[rate]
+        stage=int(early_selection['selected_stage'])
+        selected=early_test[METHOD]
+        comparison.append({'Rate':f'{rate}×','Model':f'Full unrolled early exit (Stage {stage})',
+                           **{k:selected[k] for k in metric_keys}})
+    if rate==4:
+        step=int(runs[rate][1]['checkpoint_step'])
+        stage6_path=runs[rate][0]/'evaluation/exploratory_test'/f'stage-06-step-{step:07d}'/'summary.json'
+        if stage6_path.exists():
+            stage6=read_json(stage6_path)[METHOD]
+            comparison.append({'Rate':'4×','Model':'Full unrolled Stage 6 (post-hoc)',
+                               **{k:stage6[k] for k in metric_keys}})
 if 4 in RATES:
     path=DATA_ROOT/'derived/unrolled_rdbm_4x_scratch/evaluation/test/step-0037960/summary.json'
     if path.exists():
         value=read_json(path)['unrolled_rdbm']
-        comparison.insert(next(i for i,row in enumerate(comparison) if row['Rate']=='4×' and row['Model']=='Full diffusion-unrolled'),
-                          {'Rate':'4×','Model':'Three-stage RDBM-derived',**{k:value[k] for k in ('psnr','ssim','nmse','measurement_residual')}})
+        comparison.insert(next(i for i,row in enumerate(comparison) if row['Rate']=='4×' and row['Model']=='Full unrolled (Stage 10)'),
+                          {'Rate':'4×','Model':'Three-stage RDBM-derived',**{k:value[k] for k in metric_keys}})
 formatted=[{'Rate':row['Rate'],'Model':row['Model'],'PSNR ↑':row['psnr'],'SSIM ↑':row['ssim'],
-            'NMSE ↓':row['nmse'],'Residual ↓':row['measurement_residual']} for row in comparison]
-show_table(formatted,[(key,key) for key in formatted[0]])
+            'NMSE ↓':row['nmse'],'Residual ↓':row['measurement_residual'],
+            'Seconds/slice ↓':row['seconds_per_slice']} for row in comparison]
+show_table(formatted,[(key,key) for key in formatted[0]],
+           bold_best={'PSNR ↑':'max','SSIM ↑':'max','NMSE ↓':'min','Residual ↓':'min','Seconds/slice ↓':'min'},
+           group_by='Rate')
 """
         ),
         md("## Training trajectories"),
@@ -238,7 +272,8 @@ for rate in RATES:
     display(Image(filename=str(figure_path),width=2400))
     rows=[{'Stage':name,'PSNR':value['psnr'],'SSIM':value['ssim'],'NMSE':value['nmse']}
           for name,value in progression['rates'][str(rate)]['metrics'].items()]
-    show_table(rows,[(key,key) for key in rows[0]])
+    show_table(rows,[(key,key) for key in rows[0]],
+               bold_best={'PSNR':'max','SSIM':'max','NMSE':'min'})
 """
         ),
         md(
